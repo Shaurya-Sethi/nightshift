@@ -1,21 +1,55 @@
+//! Git workspace resolution and hygiene for agent runs.
+//!
+//! Nightshift must run inside the local clone for the selected GitHub
+//! repository before it can ask agents to make changes. This module verifies the
+//! current worktree belongs to the requested `owner/name` slug and performs the
+//! base-branch checkout and pull that happen before each orchestrator iteration.
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+/// Git operations required by the orchestrator.
+///
+/// Implement this trait in tests to avoid modifying a real checkout.
+///
+/// # Examples
+///
+/// ```rust
+/// # use nightshift::git::GitOps;
+/// # struct CleanGit;
+/// # impl GitOps for CleanGit {
+/// #     fn base_branch_exists(&self, _base_branch: &str) -> bool { true }
+/// #     fn ensure_hygiene(&self, _base_branch: &str) -> Result<(), Box<dyn std::error::Error>> {
+/// #         Ok(())
+/// #     }
+/// # }
+/// let git = CleanGit;
+/// assert!(git.base_branch_exists("main"));
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
 pub trait GitOps {
+    /// Returns whether `base_branch` exists locally or as `origin/base_branch`.
     fn base_branch_exists(&self, base_branch: &str) -> bool;
+    /// Checks out `base_branch` and pulls latest changes before an agent run.
     fn ensure_hygiene(&self, base_branch: &str) -> Result<(), Box<dyn std::error::Error>>;
 }
 
+/// [`GitOps`] implementation backed by the `git` command-line tool.
 pub struct GitCliAdapter {
     workdir: PathBuf,
 }
 
 impl GitCliAdapter {
+    /// Creates a git adapter for the local clone that matches `repo`.
+    ///
+    /// `repo` must be the GitHub slug in `owner/name` form. The current working
+    /// directory must be inside a git worktree whose remotes point at that slug.
     pub fn for_repo(repo: &str) -> Result<Self, Box<dyn std::error::Error>> {
         let workdir = resolve_workspace(repo)?;
         Ok(Self { workdir })
     }
 
+    /// Returns the verified worktree root used for git commands.
     pub fn workdir(&self) -> &Path {
         &self.workdir
     }
@@ -70,7 +104,12 @@ impl GitOps for GitCliAdapter {
     }
 }
 
-/// Returns the git worktree root for `repo` (`owner/name`) when cwd is inside that clone.
+/// Returns the git worktree root for `repo` when cwd is inside that clone.
+///
+/// The repository comparison is based on configured git remotes, not directory
+/// names. Remote URLs are normalized with `parse_github_repo_slug` before
+/// comparison so SSH, HTTPS, and common credential-bearing GitHub URLs match the
+/// same `owner/name` slug.
 pub fn resolve_workspace(repo: &str) -> Result<PathBuf, Box<dyn std::error::Error>> {
     let start = std::env::current_dir()?;
     let Some(toplevel) = git_toplevel(&start) else {
@@ -92,6 +131,7 @@ pub fn resolve_workspace(repo: &str) -> Result<PathBuf, Box<dyn std::error::Erro
     .into())
 }
 
+/// Finds the git top-level directory for `start`.
 fn git_toplevel(start: &Path) -> Option<PathBuf> {
     let output = Command::new("git")
         .args(["rev-parse", "--show-toplevel"])
@@ -112,6 +152,7 @@ fn git_toplevel(start: &Path) -> Option<PathBuf> {
     }
 }
 
+/// Checks all configured remotes for a GitHub slug matching `repo`.
 fn workspace_matches_repo(toplevel: &Path, repo: &str) -> Result<bool, Box<dyn std::error::Error>> {
     for remote in git_remotes(toplevel)? {
         let url = git_remote_url(toplevel, &remote)?;
@@ -122,6 +163,7 @@ fn workspace_matches_repo(toplevel: &Path, repo: &str) -> Result<bool, Box<dyn s
     Ok(false)
 }
 
+/// Lists git remote names configured in the worktree.
 fn git_remotes(toplevel: &Path) -> Result<Vec<String>, Box<dyn std::error::Error>> {
     let output = Command::new("git")
         .args(["remote"])
@@ -146,6 +188,7 @@ fn git_remotes(toplevel: &Path) -> Result<Vec<String>, Box<dyn std::error::Error
         .collect())
 }
 
+/// Reads a single remote URL from the worktree.
 fn git_remote_url(toplevel: &Path, remote: &str) -> Result<String, Box<dyn std::error::Error>> {
     let output = Command::new("git")
         .args(["remote", "get-url", remote])
@@ -165,10 +208,17 @@ fn git_remote_url(toplevel: &Path, remote: &str) -> Result<String, Box<dyn std::
     Ok(String::from_utf8(output.stdout)?.trim().to_string())
 }
 
+/// Compares a remote URL with an expected GitHub `owner/name` slug.
 fn origin_matches_repo(origin: &str, repo: &str) -> bool {
     parse_github_repo_slug(origin).is_some_and(|slug| slug.eq_ignore_ascii_case(repo))
 }
 
+/// Parses common GitHub remote URL forms into an `owner/name` slug.
+///
+/// Supported forms include `git@github.com:owner/repo.git`,
+/// `ssh://git@github.com/owner/repo.git`, `https://github.com/owner/repo`,
+/// `http://github.com/owner/repo.git`, and URLs with credentials before
+/// `github.com`. Non-GitHub remotes return [`None`].
 fn parse_github_repo_slug(remote: &str) -> Option<String> {
     let remote = remote.trim().trim_end_matches(".git");
 
@@ -201,6 +251,7 @@ fn parse_github_repo_slug(remote: &str) -> Option<String> {
     None
 }
 
+/// Builds an `owner/name` slug from the path portion of a GitHub remote URL.
 fn slug_from_path(path: &str) -> Option<String> {
     let path = path.trim_start_matches('/');
     let (owner, repo) = path.split_once('/')?;

@@ -1,5 +1,42 @@
+//! Parses the structured markdown contract used to connect PRDs, child issues,
+//! and blockers.
+//!
+//! Child issue bodies declare their PRD parent in a `Parent` section and their
+//! dependencies in a `Blocked by` section. Section matching is case-insensitive
+//! and currently substring-based, so a line containing `transparent` can start a
+//! `parent` capture, and a line containing `unblocked by` can start a
+//! `blocked by` capture. Once a section is found, issue numbers of the form
+//! `#123` are captured from that line and following lines until the next
+//! markdown header that starts with one to six `#` characters followed by a
+//! space.
+//!
+//! [`crate::parser::extract_parent_prd`] returns the first captured parent
+//! number because the orchestrator treats a child issue as belonging to a single
+//! PRD. [`crate::parser::extract_blockers`] returns every blocker number in
+//! encounter order, preserving order across multiple numbers on one line and
+//! across multiple lines. Fenced code blocks are not special to the parser, so
+//! `#123` inside a captured section is treated the same as any other issue
+//! reference until the next markdown header.
+
 use regex::Regex;
 
+/// Extracts issue numbers from a named issue-body section.
+///
+/// Use this when adding parser behavior that needs the same section-capture
+/// rules as the orchestrator: case-insensitive substring section matching,
+/// capture from the matching line, and stop at the next markdown header.
+/// Numbers are returned in the order their `#123` references appear.
+///
+/// # Examples
+///
+/// ```rust
+/// let body = "## Blocked by\n#10 and #11\n\n## Notes\n#99";
+///
+/// assert_eq!(
+///     nightshift::parser::extract_section_issue_numbers(body, "blocked by"),
+///     vec![10, 11]
+/// );
+/// ```
 pub fn extract_section_issue_numbers(body: &str, section_name: &str) -> Vec<u32> {
     let mut numbers = Vec::new();
     let mut capturing: bool = false;
@@ -7,6 +44,8 @@ pub fn extract_section_issue_numbers(body: &str, section_name: &str) -> Vec<u32>
     let re_num = Regex::new(r"#([0-9]+)").unwrap();
     let re_header = Regex::new(r"^#{1,6}\s").unwrap();
 
+    // Keep number scanning shared so the matching header line and captured body
+    // lines follow identical `#123` extraction rules.
     let mut scan_line = |line: &str| {
         for cap in re_num.captures_iter(line) {
             if let Ok(num) = cap[1].parse::<u32>() {
@@ -33,12 +72,38 @@ pub fn extract_section_issue_numbers(body: &str, section_name: &str) -> Vec<u32>
     numbers
 }
 
+/// Returns the PRD issue number declared by a child issue body.
+///
+/// Nightshift uses this to decide whether an open issue belongs under the target
+/// PRD. If multiple numbers are captured from the `Parent` section, the first
+/// number wins. Returns [`None`] when no matching section or number is found.
+///
+/// # Examples
+///
+/// ```rust
+/// let body = "## Parent\n#42\n#99\n";
+///
+/// assert_eq!(nightshift::parser::extract_parent_prd(body), Some(42));
+/// ```
 pub fn extract_parent_prd(body: &str) -> Option<u32> {
     extract_section_issue_numbers(body, "parent")
         .into_iter()
         .next()
 }
 
+/// Returns blocker issue numbers declared by a child issue body.
+///
+/// Nightshift checks these issue numbers before selecting a candidate for agent
+/// work. The order of `#123` references is preserved, including multiple
+/// references on one line.
+///
+/// # Examples
+///
+/// ```rust
+/// let body = "## Blocked by\n#3\n#1, #2\n";
+///
+/// assert_eq!(nightshift::parser::extract_blockers(body), vec![3, 1, 2]);
+/// ```
 pub fn extract_blockers(body: &str) -> Vec<u32> {
     extract_section_issue_numbers(body, "blocked by")
 }

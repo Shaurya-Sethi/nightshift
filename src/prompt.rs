@@ -1,9 +1,21 @@
+//! Prompt construction for coding-agent runs.
+//!
+//! The orchestrator combines PRD context, the selected child issue body, and
+//! maintainer directives into one prompt. The parser decides which issue to run,
+//! while this module preserves the selected issue details and instructions in a
+//! form that can be sent to an agent over stdin.
+
 use std::fs::File;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use crate::github::GithubIssue;
 
+/// Returns the built-in maintainer directives appended to every prompt.
+///
+/// These defaults describe the expected agent workflow: branch from the base,
+/// implement with tests, open a PR, self-review, merge, close the issue, and
+/// return to the base branch.
 pub fn default_directives() -> &'static str {
     r#"1. Orient yourself in the repository.
     2. Create a feature branch: git checkout -b issue-{issue_number}
@@ -16,6 +28,14 @@ pub fn default_directives() -> &'static str {
     9. Checkout the base branch and pull."#
 }
 
+/// Loads maintainer directives from a file or falls back to [`default_directives`].
+///
+/// File contents are trimmed before being appended to the rendered issue prompt.
+///
+/// # Errors
+///
+/// Returns a user-facing error string when a requested prompt file cannot be
+/// read.
 pub fn load_directives(prompt_file: Option<&Path>) -> Result<String, String> {
     match prompt_file {
         Some(prompt_file) => std::fs::read_to_string(prompt_file)
@@ -30,6 +50,27 @@ pub fn load_directives(prompt_file: Option<&Path>) -> Result<String, String> {
     }
 }
 
+/// Renders the prompt sent to the coding agent for one selected issue.
+///
+/// The prompt includes repository context, the PRD body, the selected child
+/// issue body, and the maintainer directives. It does not parse issue sections;
+/// candidate selection has already happened in [`crate::orchestrator`].
+///
+/// # Examples
+///
+/// ```rust
+/// # use nightshift::github::GithubIssue;
+/// # use nightshift::prompt::render_issue_prompt;
+/// let issue = GithubIssue {
+///     number: 7,
+///     title: "Add endpoint".into(),
+///     body: "Acceptance criteria".into(),
+/// };
+///
+/// let prompt = render_issue_prompt("owner/repo", "PRD body", &issue, "Run tests.");
+/// assert!(prompt.contains("issue #7"));
+/// assert!(prompt.contains("PRD body"));
+/// ```
 pub fn render_issue_prompt(
     repo: &str,
     prd_body: &str,
@@ -83,6 +124,10 @@ mod tests {
     }
 }
 
+/// Writes a temporary copy of the prompt for debugging an agent run.
+///
+/// Failures are intentionally ignored because this is diagnostic output and
+/// should not stop the main workflow.
 pub fn save_prompt_copy(issue_number: u32, prompt: &str) {
     let mut temp_path: PathBuf = std::env::temp_dir();
     temp_path.push(format!("nightshift-prompt-{}.txt", issue_number));

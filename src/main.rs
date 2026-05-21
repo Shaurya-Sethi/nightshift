@@ -1,3 +1,8 @@
+//! Binary entrypoint for the nightshift CLI.
+//!
+//! This wires command-line arguments to the GitHub, git, prompt, and agent
+//! adapters, then hands control to [`nightshift::orchestrator::run`].
+
 use clap::Parser;
 use nightshift::agent::ProcessAgentRunner;
 use nightshift::cli::Args;

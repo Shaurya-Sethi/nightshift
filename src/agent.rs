@@ -1,23 +1,48 @@
+//! Coding-agent selection and execution.
+//!
+//! Nightshift renders a full issue prompt and sends it to a configured agent
+//! process through stdin. [`crate::agent::Agent`] owns the command names and
+//! argument lists, while [`crate::agent::AgentRunner`] lets the orchestrator run
+//! a real process in production and a fake runner in tests.
+
 use clap::ValueEnum;
 use std::io::Write;
 use std::process::{Command, Stdio};
 
+/// Coding-agent CLI variants supported by nightshift.
 #[derive(ValueEnum, Debug, Clone, Copy)]
 pub enum Agent {
+    /// Anthropic Claude Code, invoked as `claude`.
     Claude,
+    /// OpenAI Codex CLI, invoked as `codex exec -`.
     Codex,
+    /// Google Antigravity CLI, invoked as `agy`.
     Antigravity,
+    /// Cursor agent CLI, invoked as `agent`.
     Cursor,
+    /// Pi CLI, invoked as `pi`.
     Pi,
+    /// GitHub Copilot CLI, invoked as `copilot`.
     Copilot,
 }
 
 impl Agent {
-    /// Returns the CLI program and flags for the agent.
+    /// Returns the CLI program and flags for this agent.
     ///
-    /// The compiled issue prompt is written to the child process stdin after spawn
-    /// (keeps large prompts off argv). Only Codex uses `-` as a documented stdin marker;
-    /// other agents must not receive `-` as a literal prompt argument.
+    /// The compiled issue prompt is written to the child process stdin after
+    /// spawn, which keeps large prompts off argv. Only [`Agent::Codex`] uses `-`
+    /// as a documented stdin marker. Other agents are invoked with their
+    /// non-interactive flags and no literal prompt argument.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use nightshift::agent::Agent;
+    ///
+    /// let (program, args) = Agent::Codex.get_command();
+    /// assert_eq!(program, "codex");
+    /// assert!(args.contains(&"-"));
+    /// ```
     pub fn get_command(self) -> (&'static str, Vec<&'static str>) {
         match self {
             // claude -p reads piped stdin when no positional prompt is given
@@ -36,10 +61,31 @@ impl Agent {
     }
 }
 
+/// Runs a rendered issue prompt with a selected [`Agent`].
+///
+/// Use this trait in orchestrator tests to observe whether an agent would have
+/// been invoked without spawning a process.
+///
+/// # Examples
+///
+/// ```rust
+/// # use nightshift::agent::{Agent, AgentRunner};
+/// # struct Recorder;
+/// # impl AgentRunner for Recorder {
+/// #     fn run(&self, _agent: Agent, _prompt: &str) -> Result<(), Box<dyn std::error::Error>> {
+/// #         Ok(())
+/// #     }
+/// # }
+/// let runner = Recorder;
+/// runner.run(Agent::Cursor, "Solve issue #7")?;
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
 pub trait AgentRunner {
+    /// Sends `prompt` to `agent` and returns when the agent process completes.
     fn run(&self, agent: Agent, prompt: &str) -> Result<(), Box<dyn std::error::Error>>;
 }
 
+/// [`AgentRunner`] that spawns the configured agent command.
 pub struct ProcessAgentRunner;
 
 impl AgentRunner for ProcessAgentRunner {

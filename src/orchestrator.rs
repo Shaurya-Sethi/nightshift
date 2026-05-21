@@ -1,25 +1,90 @@
+//! Coordinates the PRD issue loop.
+//!
+//! The orchestrator fetches ready GitHub issues, uses [`crate::parser`] to keep
+//! only child issues for the requested PRD, skips children whose blockers are
+//! still open, and invokes the configured agent with a rendered prompt. It owns
+//! workflow policy such as candidate ordering, dry-run behavior, git hygiene,
+//! and the post-agent check that the selected issue was closed.
+
 use crate::agent::{Agent, AgentRunner};
 use crate::git::GitOps;
 use crate::github::{GithubIssue, GithubIssues};
 use crate::parser::{extract_blockers, extract_parent_prd};
 use crate::prompt::{render_issue_prompt, save_prompt_copy};
 
+/// Configuration for one nightshift PRD loop.
 pub struct WorkflowConfig<'a> {
+    /// PRD issue number whose body becomes shared context for every child issue.
     pub prd: u32,
+    /// Lowest child issue number to consider when selecting candidates.
     pub issue: u32,
+    /// GitHub repository slug in `owner/name` form.
     pub repo: &'a str,
+    /// Base branch to check out and pull before each agent run.
     pub base_branch: &'a str,
+    /// When true, render and print the selected prompt without invoking an agent.
     pub dry_run: bool,
+    /// Coding agent variant to invoke for selected issues.
     pub agent: Agent,
+    /// Maintainer instructions appended to each generated issue prompt.
     pub directives: &'a str,
 }
 
+/// Runtime adapters used by [`run`].
+///
+/// Tests provide fake implementations here so the loop can be exercised without
+/// shelling out to `gh`, `git`, or a coding-agent CLI.
 pub struct Runtime<'a> {
+    /// GitHub issue source and blocker-state checker.
     pub github: &'a dyn GithubIssues,
+    /// Git workspace hygiene implementation.
     pub git: &'a dyn GitOps,
+    /// Agent process runner.
     pub agent_runner: &'a dyn AgentRunner,
 }
 
+/// Runs the PRD child-issue loop until no eligible candidate remains.
+///
+/// Each iteration enforces git hygiene, fetches open `ready-for-agent` issues,
+/// filters children that declare the requested PRD parent, then selects the
+/// lowest-numbered unblocked child. Dry runs stop after printing the selected
+/// issue and prompt preview. Non-dry runs save a prompt copy, invoke the agent,
+/// and require the selected GitHub issue to be closed before continuing.
+///
+/// # Errors
+///
+/// Returns an error when GitHub or git adapters fail, the PRD issue cannot be
+/// found, no issues are available, the agent command fails, or the selected
+/// issue remains open after a successful agent exit.
+///
+/// # Examples
+///
+/// ```rust,no_run
+/// # use nightshift::agent::{Agent, ProcessAgentRunner};
+/// # use nightshift::git::GitCliAdapter;
+/// # use nightshift::github::GhCliAdapter;
+/// # use nightshift::orchestrator::{Runtime, WorkflowConfig, run};
+/// # let github = GhCliAdapter;
+/// # let git = GitCliAdapter::for_repo("owner/repo")?;
+/// # let agent_runner = ProcessAgentRunner;
+/// let config = WorkflowConfig {
+///     prd: 42,
+///     issue: 0,
+///     repo: "owner/repo",
+///     base_branch: "main",
+///     dry_run: true,
+///     agent: Agent::Cursor,
+///     directives: "Run tests before opening a PR.",
+/// };
+/// let runtime = Runtime {
+///     github: &github,
+///     git: &git,
+///     agent_runner: &agent_runner,
+/// };
+///
+/// run(config, runtime)?;
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
 pub fn run(
     config: WorkflowConfig<'_>,
     runtime: Runtime<'_>,
@@ -138,6 +203,8 @@ pub fn run(
     Ok(())
 }
 
+/// Collects open child issues for `prd` and reports whether any child exists
+/// below the configured issue floor.
 pub(crate) fn collect_prd_candidates(
     issues: &[GithubIssue],
     prd: u32,
@@ -158,6 +225,7 @@ pub(crate) fn collect_prd_candidates(
     (candidates, prd_has_open_issues)
 }
 
+/// Picks the lowest-numbered candidate whose declared blockers are all closed.
 pub(crate) fn pick_next_unblocked_issue(
     candidates: &[GithubIssue],
     github: &dyn GithubIssues,

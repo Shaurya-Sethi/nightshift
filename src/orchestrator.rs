@@ -143,14 +143,12 @@ pub fn run(
         }
 
         let next_issue_to_solve =
-            pick_next_unblocked_issue(&candidates, runtime.github, config.repo).map_err(
-                |err| {
-                    format!(
-                        "nightshift: API or connection error while checking blockers: {}",
-                        err
-                    )
-                },
-            )?;
+            pick_next_unblocked_issue(&candidates, runtime.github, config.repo).map_err(|err| {
+                format!(
+                    "nightshift: API or connection error while checking blockers: {}",
+                    err
+                )
+            })?;
 
         let Some(selected_issue) = next_issue_to_solve else {
             println!("nightshift: all remaining issues are blocked, loop complete.");
@@ -274,7 +272,10 @@ mod tests {
             Ok(repo.unwrap_or("foobar/repo").to_string())
         }
 
-        fn fetch_issues(&self, _repo: &str) -> Result<Vec<GithubIssue>, Box<dyn std::error::Error>> {
+        fn fetch_issues(
+            &self,
+            _repo: &str,
+        ) -> Result<Vec<GithubIssue>, Box<dyn std::error::Error>> {
             Ok(self.issues.clone())
         }
 
@@ -283,9 +284,7 @@ mod tests {
             _repo: &str,
             blockers: &[u32],
         ) -> Result<bool, Box<dyn std::error::Error>> {
-            Ok(blockers
-                .iter()
-                .all(|blocker| self.closed.contains(blocker)))
+            Ok(blockers.iter().all(|blocker| self.closed.contains(blocker)))
         }
 
         fn is_issue_closed(
@@ -356,12 +355,15 @@ mod tests {
             issues: vec![],
             closed: HashSet::new(),
         };
-        assert!(pick_next_unblocked_issue(&[blocked.clone()], &github, "foobar/repo")
-            .unwrap()
-            .is_none());
-        let picked = pick_next_unblocked_issue(&[blocked.clone(), ready.clone()], &github, "foobar/repo")
-            .unwrap()
-            .unwrap();
+        assert!(
+            pick_next_unblocked_issue(&[blocked.clone()], &github, "foobar/repo")
+                .unwrap()
+                .is_none()
+        );
+        let picked =
+            pick_next_unblocked_issue(&[blocked.clone(), ready.clone()], &github, "foobar/repo")
+                .unwrap()
+                .unwrap();
         assert_eq!(picked.number, 11);
 
         let github = MockGithub {
@@ -381,11 +383,7 @@ mod tests {
             title: "PRD".into(),
             body: "Product requirements".into(),
         };
-        let issues = vec![
-            prd,
-            child(10, 42, &[]),
-            child(11, 42, &[]),
-        ];
+        let issues = vec![prd, child(10, 42, &[]), child(11, 42, &[])];
         let github = MockGithub {
             issues,
             closed: HashSet::new(),

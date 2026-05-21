@@ -80,16 +80,16 @@ pub fn resolve_workspace(repo: &str) -> Result<PathBuf, Box<dyn std::error::Erro
         .into());
     };
 
-    let origin = git_origin_url(&toplevel)?;
-    if !origin_matches_repo(&origin, repo) {
-        return Err(format!(
-            "nightshift: current directory is not a clone of {repo} (origin is {origin}); \
-             cd into a local clone of {repo} and run nightshift again"
-        )
-        .into());
+    if workspace_matches_repo(&toplevel, repo)? {
+        return Ok(toplevel);
     }
 
-    Ok(toplevel)
+    let origin = git_remote_url(&toplevel, "origin").unwrap_or_default();
+    Err(format!(
+        "nightshift: current directory is not a clone of {repo} (origin is {origin}); \
+         cd into a local clone of {repo} and run nightshift again"
+    )
+    .into())
 }
 
 fn git_toplevel(start: &Path) -> Option<PathBuf> {
@@ -112,16 +112,50 @@ fn git_toplevel(start: &Path) -> Option<PathBuf> {
     }
 }
 
-fn git_origin_url(toplevel: &Path) -> Result<String, Box<dyn std::error::Error>> {
+fn workspace_matches_repo(toplevel: &Path, repo: &str) -> Result<bool, Box<dyn std::error::Error>> {
+    for remote in git_remotes(toplevel)? {
+        let url = git_remote_url(toplevel, &remote)?;
+        if origin_matches_repo(&url, repo) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn git_remotes(toplevel: &Path) -> Result<Vec<String>, Box<dyn std::error::Error>> {
     let output = Command::new("git")
-        .args(["remote", "get-url", "origin"])
+        .args(["remote"])
         .current_dir(toplevel)
         .output()?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(format!(
-            "nightshift: failed to read git remote 'origin' in {}: {}",
+            "nightshift: failed to list git remotes in {}: {}",
+            toplevel.display(),
+            stderr.trim()
+        )
+        .into());
+    }
+
+    Ok(String::from_utf8(output.stdout)?
+        .lines()
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(str::to_string)
+        .collect())
+}
+
+fn git_remote_url(toplevel: &Path, remote: &str) -> Result<String, Box<dyn std::error::Error>> {
+    let output = Command::new("git")
+        .args(["remote", "get-url", remote])
+        .current_dir(toplevel)
+        .output()?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!(
+            "nightshift: failed to read git remote '{remote}' in {}: {}",
             toplevel.display(),
             stderr.trim()
         )
@@ -152,6 +186,16 @@ fn parse_github_repo_slug(remote: &str) -> Option<String> {
 
     if let Some(rest) = remote.strip_prefix("http://github.com/") {
         return slug_from_path(rest);
+    }
+
+    let remote_lower = remote.to_lowercase();
+    if let Some(idx) = remote_lower.find("github.com/") {
+        let path = &remote[idx + "github.com/".len()..];
+        return slug_from_path(path);
+    }
+    if let Some(idx) = remote_lower.find("github.com:") {
+        let path = &remote[idx + "github.com:".len()..];
+        return slug_from_path(path);
     }
 
     None

@@ -8,14 +8,8 @@ use nightshift::prompt::load_directives;
 
 fn main() {
     let args = Args::parse();
-    let git = GitCliAdapter;
     let github = GhCliAdapter;
     let agent_runner = ProcessAgentRunner;
-
-    if !git.base_branch_exists(&args.base_branch) {
-        eprintln!("nightshift: base branch {} not found", args.base_branch);
-        std::process::exit(1);
-    }
 
     let repo = match github.resolve_repo(args.repo.as_deref()) {
         Ok(repo) => repo,
@@ -24,6 +18,23 @@ fn main() {
             std::process::exit(1);
         }
     };
+
+    let git = match GitCliAdapter::for_repo(&repo) {
+        Ok(git) => git,
+        Err(e) => {
+            eprintln!("{}", e);
+            std::process::exit(1);
+        }
+    };
+
+    if !git.base_branch_exists(&args.base_branch) {
+        eprintln!(
+            "nightshift: base branch {} not found in {}",
+            args.base_branch,
+            git.workdir().display()
+        );
+        std::process::exit(1);
+    }
 
     let directives = match load_directives(args.prompt_file.as_deref()) {
         Ok(directives) => directives,

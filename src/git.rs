@@ -1,3 +1,4 @@
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 pub trait GitOps {
@@ -5,7 +6,26 @@ pub trait GitOps {
     fn ensure_hygiene(&self, base_branch: &str) -> Result<(), Box<dyn std::error::Error>>;
 }
 
-pub struct GitCliAdapter;
+pub struct GitCliAdapter {
+    workdir: PathBuf,
+}
+
+impl GitCliAdapter {
+    pub fn for_repo(repo: &str) -> Result<Self, Box<dyn std::error::Error>> {
+        let workdir = resolve_workspace(repo)?;
+        Ok(Self { workdir })
+    }
+
+    pub fn workdir(&self) -> &Path {
+        &self.workdir
+    }
+
+    fn git(&self) -> Command {
+        let mut command = Command::new("git");
+        command.current_dir(&self.workdir);
+        command
+    }
+}
 
 impl GitOps for GitCliAdapter {
     fn base_branch_exists(&self, base_branch: &str) -> bool {
@@ -13,7 +33,8 @@ impl GitOps for GitCliAdapter {
         let remote = format!("refs/remotes/origin/{}", base_branch);
 
         for reference in [&local, &remote] {
-            if Command::new("git")
+            if self
+                .git()
                 .args(["show-ref", "--verify", "--quiet", reference])
                 .status()
                 .map(|status| status.success())
@@ -28,19 +49,18 @@ impl GitOps for GitCliAdapter {
 
     fn ensure_hygiene(&self, base_branch: &str) -> Result<(), Box<dyn std::error::Error>> {
         println!(
-            "nightshift: enforcing git hygiene (checking out and pulling {})...",
+            "nightshift: enforcing git hygiene in {} (checking out and pulling {})...",
+            self.workdir.display(),
             base_branch
         );
 
-        let checkout_status = Command::new("git")
-            .args(["checkout", base_branch])
-            .status()?;
+        let checkout_status = self.git().args(["checkout", base_branch]).status()?;
 
         if !checkout_status.success() {
             return Err(format!("failed to checkout base branch '{}'", base_branch).into());
         }
 
-        let pull_status = Command::new("git").args(["pull"]).status()?;
+        let pull_status = self.git().args(["pull"]).status()?;
 
         if !pull_status.success() {
             return Err("failed to pull latest changes from remote".into());
@@ -48,4 +68,100 @@ impl GitOps for GitCliAdapter {
 
         Ok(())
     }
+}
+
+/// Returns the git worktree root for `repo` (`owner/name`) when cwd is inside that clone.
+pub fn resolve_workspace(repo: &str) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    let start = std::env::current_dir()?;
+    let Some(toplevel) = git_toplevel(&start) else {
+        return Err(format!(
+            "nightshift: not inside a git repository; cd into a local clone of {repo} and run nightshift again"
+        )
+        .into());
+    };
+
+    let origin = git_origin_url(&toplevel)?;
+    if !origin_matches_repo(&origin, repo) {
+        return Err(format!(
+            "nightshift: current directory is not a clone of {repo} (origin is {origin}); \
+             cd into a local clone of {repo} and run nightshift again"
+        )
+        .into());
+    }
+
+    Ok(toplevel)
+}
+
+fn git_toplevel(start: &Path) -> Option<PathBuf> {
+    let output = Command::new("git")
+        .args(["rev-parse", "--show-toplevel"])
+        .current_dir(start)
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let toplevel = String::from_utf8(output.stdout).ok()?;
+    let path = PathBuf::from(toplevel.trim());
+    if path.as_os_str().is_empty() {
+        None
+    } else {
+        Some(path)
+    }
+}
+
+fn git_origin_url(toplevel: &Path) -> Result<String, Box<dyn std::error::Error>> {
+    let output = Command::new("git")
+        .args(["remote", "get-url", "origin"])
+        .current_dir(toplevel)
+        .output()?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!(
+            "nightshift: failed to read git remote 'origin' in {}: {}",
+            toplevel.display(),
+            stderr.trim()
+        )
+        .into());
+    }
+
+    Ok(String::from_utf8(output.stdout)?.trim().to_string())
+}
+
+fn origin_matches_repo(origin: &str, repo: &str) -> bool {
+    parse_github_repo_slug(origin).is_some_and(|slug| slug.eq_ignore_ascii_case(repo))
+}
+
+fn parse_github_repo_slug(remote: &str) -> Option<String> {
+    let remote = remote.trim().trim_end_matches(".git");
+
+    if let Some(rest) = remote.strip_prefix("git@github.com:") {
+        return slug_from_path(rest);
+    }
+
+    if let Some(rest) = remote.strip_prefix("ssh://git@github.com/") {
+        return slug_from_path(rest);
+    }
+
+    if let Some(rest) = remote.strip_prefix("https://github.com/") {
+        return slug_from_path(rest);
+    }
+
+    if let Some(rest) = remote.strip_prefix("http://github.com/") {
+        return slug_from_path(rest);
+    }
+
+    None
+}
+
+fn slug_from_path(path: &str) -> Option<String> {
+    let path = path.trim_start_matches('/');
+    let (owner, repo) = path.split_once('/')?;
+    if owner.is_empty() || repo.is_empty() {
+        return None;
+    }
+    Some(format!("{owner}/{repo}"))
 }

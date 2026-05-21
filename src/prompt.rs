@@ -56,6 +56,33 @@ pub fn render_issue_prompt(
     )
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::github::GithubIssue;
+
+    #[test]
+    fn render_issue_prompt_includes_prd_task_and_directives() {
+        let issue = GithubIssue {
+            number: 7,
+            title: "Add endpoint".into(),
+            body: "Acceptance: returns 200".into(),
+        };
+        let prompt = render_issue_prompt(
+            "foobar/repo",
+            "PRD acceptance criteria",
+            &issue,
+            "1. Write tests\n2. Open PR",
+        );
+        assert!(prompt.contains("issue #7"));
+        assert!(prompt.contains("Add endpoint"));
+        assert!(prompt.contains("PRD acceptance criteria"));
+        assert!(prompt.contains("Acceptance: returns 200"));
+        assert!(prompt.contains("1. Write tests"));
+        assert!(prompt.contains("foobar/repo"));
+    }
+}
+
 pub fn save_prompt_copy(issue_number: u32, prompt: &str) {
     let mut temp_path: PathBuf = std::env::temp_dir();
     temp_path.push(format!("nightshift-prompt-{}.txt", issue_number));

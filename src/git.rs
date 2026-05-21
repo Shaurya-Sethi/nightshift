@@ -209,3 +209,76 @@ fn slug_from_path(path: &str) -> Option<String> {
     }
     Some(format!("{owner}/{repo}"))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{origin_matches_repo, parse_github_repo_slug};
+
+    #[test]
+    fn parse_ssh_git_url() {
+        assert_eq!(
+            parse_github_repo_slug("git@github.com:foobar/nightshift.git"),
+            Some("foobar/nightshift".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_https_url() {
+        assert_eq!(
+            parse_github_repo_slug("https://github.com/foobar/nightshift"),
+            Some("foobar/nightshift".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_ssh_scheme_url() {
+        assert_eq!(
+            parse_github_repo_slug("ssh://git@github.com/foobar/nightshift.git"),
+            Some("foobar/nightshift".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_http_url() {
+        assert_eq!(
+            parse_github_repo_slug("http://github.com/foobar/nightshift.git"),
+            Some("foobar/nightshift".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_embedded_github_com_path() {
+        assert_eq!(
+            parse_github_repo_slug("https://oauth@github.com/foobar/nightshift.git"),
+            Some("foobar/nightshift".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_embedded_github_com_colon_ssh_style() {
+        assert_eq!(
+            parse_github_repo_slug("git@github.com:foobar/nightshift"),
+            Some("foobar/nightshift".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_non_github_remote_returns_none() {
+        assert_eq!(
+            parse_github_repo_slug("git@gitlab.com:foobar/nightshift.git"),
+            None
+        );
+    }
+
+    #[test]
+    fn origin_matches_repo_case_insensitive() {
+        assert!(origin_matches_repo(
+            "https://github.com/Foobar/NightShift.git",
+            "foobar/nightshift"
+        ));
+        assert!(!origin_matches_repo(
+            "https://github.com/foobar/other.git",
+            "foobar/nightshift"
+        ));
+    }
+}

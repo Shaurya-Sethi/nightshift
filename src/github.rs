@@ -22,7 +22,11 @@ pub trait GithubIssues {
         repo: &str,
         blockers: &[u32],
     ) -> Result<bool, Box<dyn std::error::Error>>;
-    fn is_issue_closed(&self, repo: &str, issue_number: u32) -> bool;
+    fn is_issue_closed(
+        &self,
+        repo: &str,
+        issue_number: u32,
+    ) -> Result<bool, Box<dyn std::error::Error>>;
 }
 
 pub struct GhCliAdapter;
@@ -35,7 +39,7 @@ impl GithubIssues for GhCliAdapter {
             return Ok(repo.to_string());
         }
 
-        let repo = Command::new("gh")
+        let output = Command::new("gh")
             .args([
                 "repo",
                 "view",
@@ -45,10 +49,25 @@ impl GithubIssues for GhCliAdapter {
                 ".nameWithOwner",
             ])
             .output()
-            .expect("Failed to execute gh command");
-        let repo = String::from_utf8(repo.stdout).expect("Invalid UTF-8 output from gh");
+            .map_err(|e| format!("nightshift: failed to execute gh command: {}", e))?;
 
-        Ok(repo.trim().to_string())
+        if !output.status.success() {
+            let err_msg = String::from_utf8_lossy(&output.stderr);
+            return Err(format!(
+                "nightshift: failed to resolve repository: {}",
+                err_msg.trim()
+            )
+            .into());
+        }
+
+        let repo = String::from_utf8(output.stdout)
+            .map_err(|e| format!("nightshift: invalid UTF-8 output from gh: {}", e))?;
+        let repo = repo.trim();
+        if repo.is_empty() {
+            return Err("nightshift: gh repo view returned empty repository name".into());
+        }
+
+        Ok(repo.to_string())
     }
 
     fn fetch_issues(&self, repo: &str) -> Result<Vec<GithubIssue>, Box<dyn std::error::Error>> {
@@ -112,7 +131,11 @@ impl GithubIssues for GhCliAdapter {
         Ok(true)
     }
 
-    fn is_issue_closed(&self, repo: &str, issue_number: u32) -> bool {
+    fn is_issue_closed(
+        &self,
+        repo: &str,
+        issue_number: u32,
+    ) -> Result<bool, Box<dyn std::error::Error>> {
         let output = Command::new("gh")
             .args([
                 "issue",
@@ -123,17 +146,19 @@ impl GithubIssues for GhCliAdapter {
                 "--json",
                 "state",
             ])
-            .output();
+            .output()?;
 
-        match output {
-            Ok(output) if output.status.success() => {
-                if let Ok(issue_state) = from_slice::<IssueState>(&output.stdout) {
-                    issue_state.state.to_lowercase() == "closed"
-                } else {
-                    false
-                }
-            }
-            _ => false,
+        if !output.status.success() {
+            let err_msg = String::from_utf8_lossy(&output.stderr);
+            return Err(format!(
+                "nightshift: failed to check issue #{} state: {}",
+                issue_number,
+                err_msg.trim()
+            )
+            .into());
         }
+
+        let issue_state: IssueState = from_slice(&output.stdout)?;
+        Ok(issue_state.state.to_lowercase() == "closed")
     }
 }

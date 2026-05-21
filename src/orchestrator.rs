@@ -142,7 +142,7 @@ pub fn run(
 
         if !runtime
             .github
-            .is_issue_closed(config.repo, selected_issue.number)
+            .is_issue_closed(config.repo, selected_issue.number)?
         {
             return Err(format!(
                 "nightshift: agent exited successfully, but issue #{} is still open on GitHub.

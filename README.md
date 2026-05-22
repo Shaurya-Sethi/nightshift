@@ -1,6 +1,6 @@
 # nightshift
 
-[CI](https://github.com/Shaurya-Sethi/nightshift/actions/workflows/ci.yml) [License: MIT](LICENSE) [Rust 2024](https://www.rust-lang.org)
+[![CI](https://img.shields.io/github/actions/workflow/status/Shaurya-Sethi/nightshift/ci.yml?branch=main&logo=github)](https://github.com/Shaurya-Sethi/nightshift/actions/workflows/ci.yml) [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE) [![Rust 2024](https://img.shields.io/badge/rust-2024-%23b7410e?logo=rust)](https://www.rust-lang.org)
 
 Go to sleep with a backlog and wake up with merged PRs.
 
@@ -86,4 +86,3 @@ For long-running PRD loops, see [docs/keep-alive.md](docs/keep-alive.md).
 - **File an Issue:** If you find a bug, encounter unexpected behavior, or have an idea for a new feature - [Open an issue](https://github.com/Shaurya-Sethi/nightshift/issues) to start a discussion.
 - **Add a New Agent:** Want to use `nightshift` with another coding assistant? Follow the step-by-step agent integration guide in [CONTRIBUTING.md](CONTRIBUTING.md#tier-1-adding-a-new-agent).
 - **Propose Other Changes:** For parser, orchestrator, or CLI changes, please open an issue first so we can align on the design. Check out [CONTRIBUTING.md](CONTRIBUTING.md#tier-2-everything-else) for codebase style and testing guidelines.
-

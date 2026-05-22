@@ -69,7 +69,7 @@ nightshift works through your PRD one issue at a time, stopping when there is no
 
 Each iteration starts from a clean state: nightshift checks out and pulls your base branch, then fetches all open `ready-for-agent` issues from GitHub. It filters down to issues that belong to your PRD (via the `## Parent` section), then picks the lowest-numbered one whose blockers are all closed. If nothing is unblocked, it stops.
 
-For the selected issue, nightshift builds a prompt from three parts: the PRD body for context, the issue body for the task, and your directives for how the agent should work. That prompt is piped to your agent via stdin.
+For the selected issue, nightshift constructs a unified prompt and pipes it to the coding agent via `stdin`. For details on prompt structures, default instructions, custom directives, and how nightshift manages isolated session context, see the [Context Management & Session Lifecycle Guide](docs/context-management.md).
 
 After the agent exits, nightshift checks that the issue is actually closed on GitHub. If it is, the loop continues from step one. If not, nightshift stops and tells you; the agent may have exited cleanly but left the issue open, which usually means something needs your attention.
 

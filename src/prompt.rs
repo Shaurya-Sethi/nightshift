@@ -18,14 +18,14 @@ use crate::github::GithubIssue;
 /// return to the base branch.
 pub fn default_directives() -> &'static str {
     r#"1. Orient yourself in the repository.
-    2. Create a feature branch: git checkout -b issue-{issue_number}
-    3. Implement using test-driven development.
-    4. Run project lint/test checks and test behavior after implementation.
-    5. Push branch and open a PR using 'gh pr create'.
-    6. Self-review using sub-agents.
-    7. Squash merge using 'gh pr merge' and delete branch.
-    8. Close the issue using 'gh issue close'.
-    9. Checkout the base branch and pull."#
+2. Create a feature branch: git checkout -b issue-{issue_number}
+3. Implement using test-driven development.
+4. Run project lint/test checks and test behavior after implementation.
+5. Push branch and open a PR using 'gh pr create'.
+6. Self-review using sub-agents.
+7. Squash merge using 'gh pr merge' and delete branch.
+8. Close the issue using 'gh issue close'.
+9. Checkout the base branch and pull."#
 }
 
 /// Loads maintainer directives from a file or falls back to [`default_directives`].
@@ -78,16 +78,17 @@ pub fn render_issue_prompt(
     directives: &str,
 ) -> String {
     format!(
-        "You are working on issue #{num}: \"{title}\" in {repo_name} repository.
-
-        ## PRD Context
-        {prd_body}
-
-        ## Task Description & Acceptance Criteria
-        {issue_body}
-
-        ## Instructions
-        {directives}",
+        "You are working on issue #{num}: \"{title}\" in {repo_name} repository.\n\n\
+         ## PRD Context\n\n\
+         ```markdown\n\
+         {prd_body}\n\
+         ```\n\n\
+         ## Task Description & Acceptance Criteria\n\n\
+         ```markdown\n\
+         {issue_body}\n\
+         ```\n\n\
+         ## Instructions\n\
+         {directives}",
         num = issue.number,
         title = issue.title,
         repo_name = repo,

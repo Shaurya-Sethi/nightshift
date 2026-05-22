@@ -1,15 +1,13 @@
 # nightshift
 
-[CI](https://github.com/Shaurya-Sethi/nightshift/actions/workflows/ci.yml)
-[License: MIT](LICENSE)
-[Rust 2024](https://www.rust-lang.org)
+[CI](https://github.com/Shaurya-Sethi/nightshift/actions/workflows/ci.yml) [License: MIT](LICENSE) [Rust 2024](https://www.rust-lang.org)
 
 Go to sleep with a backlog and wake up with merged PRs.
 
 nightshift autonomously works through your GitHub issues while you are afk. Point it at a PRD, pick your [favourite coding agent](#supported-agents), and it handles the rest: branch, implement, PR, merge, repeat. It stops when every child issue is done. Inspired by the [Ralph Wiggum](https://ghuntley.com/loop/) loop pattern.
 
 > [!WARNING]
-> **nightshift is designed exclusively for the [Matt Pocock skills](https://github.com/mattpocock/skills) workflow**, specifically the `[to-prd](https://github.com/mattpocock/skills)` and `[to-issues](https://github.com/mattpocock/skills)` skills. Your GitHub issues must be structured exactly as those skills produce them: child issues must declare a `## Parent` section referencing the PRD, a `## Blocked by` section listing dependencies, and carry the `ready-for-agent` label. Issues that do not match this structure will be silently skipped.
+> **nightshift is designed exclusively for the [Matt Pocock skills](https://github.com/mattpocock/skills) workflow**; specifically the `to-prd` and `to-issues` skills. Your GitHub issues must be structured exactly as those skills produce them: child issues must declare a `## Parent` section referencing the PRD, a `## Blocked by` section listing dependencies, and carry the `ready-for-agent` label. Issues that do not match this structure will be silently skipped.
 
 ## Prerequisites
 
@@ -81,4 +79,11 @@ For long-running PRD loops, see [docs/keep-alive.md](docs/keep-alive.md).
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md).
+`nightshift` is under active development, and i'd love your help! Whether you are fixing a bug, adding support for a new coding agent, or proposing new features, all contributions are extremely welcome.
+
+### How to get involved:
+
+- **File an Issue:** If you find a bug, encounter unexpected behavior, or have an idea for a new feature - [Open an issue](https://github.com/Shaurya-Sethi/nightshift/issues) to start a discussion.
+- **Add a New Agent:** Want to use `nightshift` with another coding assistant? Follow the step-by-step agent integration guide in [CONTRIBUTING.md](CONTRIBUTING.md#tier-1-adding-a-new-agent).
+- **Propose Other Changes:** For parser, orchestrator, or CLI changes, please open an issue first so we can align on the design. Check out [CONTRIBUTING.md](CONTRIBUTING.md#tier-2-everything-else) for codebase style and testing guidelines.
+

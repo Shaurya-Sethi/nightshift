@@ -6,7 +6,7 @@ nightshift is a small, focused tool and I would like to keep it that way. Contri
 
 ## Tier 1: Adding a new agent
 
-Adding support for a new coding agent CLI is the most self-contained contribution. Everything lives in one place: the `Agent` enum in [`src/agent.rs`](src/agent.rs).
+Adding support for a new coding agent CLI requires command wiring, model handling, tests, and docs. Agent support lives mostly in [`src/agent.rs`](src/agent.rs), with user-facing docs in [`README.md`](README.md).
 
 **Step-by-step:**
 
@@ -17,14 +17,51 @@ Adding support for a new coding agent CLI is the most self-contained contributio
     MyNewAgent,
     ```
 
-2. Add an arm to the `get_command()` match with the program name and any flags needed for non-interactive stdin mode. Follow the comment style of existing arms to explain _why_ each flag is used:
+2. Add an arm to `get_command()` with the program name and any flags needed for non-interactive stdin mode. Follow the comment style of existing arms to explain _why_ each flag is used:
 
     ```rust
     // mynewagent: -p reads piped stdin in non-interactive mode
     Self::MyNewAgent => ("mynewagent", vec!["-p"]),
     ```
 
-3. Open a PR. No new test is needed: the enum variant is its own documentation, and the existing `dry_run_does_not_invoke_agent` test in `orchestrator.rs` already covers the runner path structurally.
+3. Decide how the agent handles `--model`:
+
+    - If the CLI has a documented non-interactive model flag, add a matching arm in `get_command_with_model()` that passes the supplied value through unchanged.
+    - If the CLI has no documented non-interactive model flag, reject explicit models with a clear error. The error should tell users to retry without `--model`.
+
+    ```rust
+    Self::MyNewAgent => Ok((
+        "mynewagent",
+        vec!["-p".into(), "--model".into(), model.into()],
+    )),
+    ```
+
+4. Keep validation at the capability level only:
+
+    - Do not scrape model catalogs, parse provider/model strings, or fuzzy-match requested models.
+    - Do not pre-validate specific model names in nightshift.
+    - Let the agent CLI accept or reject the exact `--model` value.
+
+5. Add or extend focused tests in `src/agent.rs`:
+
+    - Explicit `--model` is included in the command for supported agents and passed through unchanged.
+    - Explicit `--model` is rejected for unsupported agents.
+    - Omitted `--model` preserves the persisted-default command path.
+    - Agent-process failures surface stderr, and `--model` failures add only a soft retry hint.
+
+6. Update [`README.md`](README.md):
+
+    - Add the agent to the Supported Agents table.
+    - Mark whether `--model` is supported.
+    - Mention any important caveat in plain user-facing language.
+
+7. Run the verification commands:
+
+    ```bash
+    cargo fmt --check
+    cargo test
+    cargo clippy --all-targets -- -D warnings
+    ```
 
 > [!NOTE]
 > Before adding an agent, please verify that its CLI accepts a prompt via stdin (not only via argv), and that it exits with a non-zero status code on failure. nightshift relies on both behaviours.
@@ -77,6 +114,8 @@ Tests live next to the code they guard: `#[cfg(test)]` modules at the bottom of 
 - Filesystem or temp-dir tests unless they catch a real regression
 
 New tests should stay deterministic: `cargo test` should be fast and pass without `gh` being installed or the user being logged in. If a test would require a real clone, remote, or agent binary, extend the pure logic tests instead, or document manual verification.
+
+Process-runner integration tests live in [`tests/process_agent_runner.rs`](tests/process_agent_runner.rs). They fake agent CLIs via `PATH` and a small cross-platform `nightshift-fake-agent` binary (not shell scripts). CI runs `cargo test --all` on Linux and Windows.
 
 ---
 

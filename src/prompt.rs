@@ -97,6 +97,20 @@ pub fn render_issue_prompt(
     )
 }
 
+/// Writes a temporary copy of the prompt for debugging an agent run.
+///
+/// Failures are intentionally ignored because this is diagnostic output and
+/// should not stop the main workflow.
+pub fn save_prompt_copy(issue_number: u32, prompt: &str) {
+    let mut temp_path: PathBuf = std::env::temp_dir();
+    temp_path.push(format!("nightshift-prompt-{}.txt", issue_number));
+
+    if let Ok(mut file) = File::create(&temp_path) {
+        let _ = file.write_all(prompt.as_bytes());
+        println!("nightshift: saved prompt copy to {}", temp_path.display());
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -121,19 +135,5 @@ mod tests {
         assert!(prompt.contains("Acceptance: returns 200"));
         assert!(prompt.contains("1. Write tests"));
         assert!(prompt.contains("foobar/repo"));
-    }
-}
-
-/// Writes a temporary copy of the prompt for debugging an agent run.
-///
-/// Failures are intentionally ignored because this is diagnostic output and
-/// should not stop the main workflow.
-pub fn save_prompt_copy(issue_number: u32, prompt: &str) {
-    let mut temp_path: PathBuf = std::env::temp_dir();
-    temp_path.push(format!("nightshift-prompt-{}.txt", issue_number));
-
-    if let Ok(mut file) = File::create(&temp_path) {
-        let _ = file.write_all(prompt.as_bytes());
-        println!("nightshift: saved prompt copy to {}", temp_path.display());
     }
 }

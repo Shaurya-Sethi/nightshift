@@ -2,7 +2,7 @@
 //!
 //! The parsed arguments are translated into [`crate::orchestrator::WorkflowConfig`]
 //! by the binary entrypoint. They identify the PRD, optional issue floor,
-//! repository, agent, directive source, base branch, and dry-run mode.
+//! repository, agent, optional model, directive source, base branch, and dry-run mode.
 
 use clap::Parser;
 use std::path::PathBuf;
@@ -15,7 +15,8 @@ use crate::agent::Agent;
     name = "nightshift",
     author = "Shaurya Sethi",
     version,
-    about = "Autonomous Issue Completion Loop"
+    about = "Autonomous Issue Completion Loop",
+    help_template = "{about}\n\nAuthor: {author}\n\nUsage: {usage}\n\n{all-args}"
 )]
 pub struct Args {
     /// PRD issue number whose body provides shared context for child issues.
@@ -30,6 +31,9 @@ pub struct Args {
     /// Coding agent CLI to invoke for each selected issue.
     #[arg(long)]
     pub agent: Agent,
+    /// Explicit model for the selected agent; omitted means use the agent's persisted default.
+    #[arg(long)]
+    pub model: Option<String>,
     /// Optional file containing maintainer directives to append to each prompt.
     #[arg(long)]
     pub prompt_file: Option<PathBuf>,

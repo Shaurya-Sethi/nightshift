@@ -56,6 +56,7 @@ fn main() {
         base_branch: &args.base_branch,
         dry_run: args.dry_run,
         agent: args.agent,
+        model: args.model.as_deref(),
         directives: &directives,
     };
 

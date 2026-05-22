@@ -26,6 +26,8 @@ pub struct WorkflowConfig<'a> {
     pub dry_run: bool,
     /// Coding agent variant to invoke for selected issues.
     pub agent: Agent,
+    /// Explicit model to request from the selected agent, when supported.
+    pub model: Option<&'a str>,
     /// Maintainer instructions appended to each generated issue prompt.
     pub directives: &'a str,
 }
@@ -74,6 +76,7 @@ pub struct Runtime<'a> {
 ///     base_branch: "main",
 ///     dry_run: true,
 ///     agent: Agent::Cursor,
+///     model: Some("gpt-5.2"),
 ///     directives: "Run tests before opening a PR.",
 /// };
 /// let runtime = Runtime {
@@ -166,19 +169,23 @@ pub fn run(
         save_prompt_copy(selected_issue.number, &final_prompt);
 
         if config.dry_run {
+            let (cmd_name, cmd_args) = config.agent.get_command_with_model(config.model)?;
             println!(
                 "nightshift: [DRY-RUN] Selected issue: #{} - {}",
                 selected_issue.number, selected_issue.title
             );
             println!(
-                "nightshift: [DRY-RUN] Would invoke agent: {}",
-                config.agent.get_command().0
+                "nightshift: [DRY-RUN] Would invoke agent: {} {}",
+                cmd_name,
+                cmd_args.join(" ")
             );
             println!("nightshift: [DRY-RUN] Prompt preview: \n{}", final_prompt);
             return Ok(());
         }
 
-        runtime.agent_runner.run(config.agent, &final_prompt)?;
+        runtime
+            .agent_runner
+            .run(config.agent, config.model, &final_prompt)?;
 
         if !runtime
             .github
@@ -245,7 +252,7 @@ mod tests {
     use super::*;
     use crate::agent::{Agent, AgentRunner};
     use crate::git::GitOps;
-    use std::cell::Cell;
+    use std::cell::{Cell, RefCell};
     use std::collections::HashSet;
 
     fn child(number: u32, parent: u32, blockers: &[u32]) -> GithubIssue {
@@ -276,7 +283,12 @@ mod tests {
             &self,
             _repo: &str,
         ) -> Result<Vec<GithubIssue>, Box<dyn std::error::Error>> {
-            Ok(self.issues.clone())
+            Ok(self
+                .issues
+                .iter()
+                .filter(|issue| !self.closed.contains(&issue.number))
+                .cloned()
+                .collect())
         }
 
         fn all_blockers_closed(
@@ -310,11 +322,24 @@ mod tests {
 
     struct MockAgent {
         ran: Cell<bool>,
+        received_model: RefCell<Option<String>>,
+        error_on_run: bool,
     }
 
     impl AgentRunner for MockAgent {
-        fn run(&self, _agent: Agent, _prompt: &str) -> Result<(), Box<dyn std::error::Error>> {
+        fn run(
+            &self,
+            _agent: Agent,
+            model: Option<&str>,
+            _prompt: &str,
+        ) -> Result<(), Box<dyn std::error::Error>> {
             self.ran.set(true);
+            if let Some(model) = model {
+                self.received_model.replace(Some(model.to_string()));
+            }
+            if self.error_on_run {
+                return Err("mock agent stopped after recording run".into());
+            }
             Ok(())
         }
     }
@@ -356,7 +381,7 @@ mod tests {
             closed: HashSet::new(),
         };
         assert!(
-            pick_next_unblocked_issue(&[blocked.clone()], &github, "foobar/repo")
+            pick_next_unblocked_issue(std::slice::from_ref(&blocked), &github, "foobar/repo")
                 .unwrap()
                 .is_none()
         );
@@ -390,6 +415,8 @@ mod tests {
         };
         let agent = MockAgent {
             ran: Cell::new(false),
+            received_model: RefCell::new(None),
+            error_on_run: false,
         };
         let config = WorkflowConfig {
             prd: 42,
@@ -398,6 +425,7 @@ mod tests {
             base_branch: "main",
             dry_run: true,
             agent: Agent::Cursor,
+            model: None,
             directives: "test directives",
         };
         let runtime = Runtime {
@@ -407,5 +435,87 @@ mod tests {
         };
         run(config, runtime).unwrap();
         assert!(!agent.ran.get());
+    }
+
+    #[test]
+    fn dry_run_accepts_explicit_model_without_invoking_agent() {
+        let prd = GithubIssue {
+            number: 42,
+            title: "PRD".into(),
+            body: "Product requirements".into(),
+        };
+        let issues = vec![prd, child(10, 42, &[])];
+        let github = MockGithub {
+            issues,
+            closed: HashSet::new(),
+        };
+        let agent = MockAgent {
+            ran: Cell::new(false),
+            received_model: RefCell::new(None),
+            error_on_run: false,
+        };
+        let config = WorkflowConfig {
+            prd: 42,
+            issue: 1,
+            repo: "foobar/repo",
+            base_branch: "main",
+            dry_run: true,
+            agent: Agent::Cursor,
+            model: Some("gpt-5.2"),
+            directives: "test directives",
+        };
+        let runtime = Runtime {
+            github: &github,
+            git: &MockGit,
+            agent_runner: &agent,
+        };
+        run(config, runtime).unwrap();
+        assert!(!agent.ran.get());
+        assert_eq!(agent.received_model.borrow().as_deref(), None);
+
+        let (cmd_name, cmd_args) = Agent::Cursor
+            .get_command_with_model(Some("gpt-5.2"))
+            .expect("dry-run should accept explicit model for cursor");
+        assert_eq!(cmd_name, "agent");
+        assert!(cmd_args.iter().any(|arg| arg == "--model"));
+        assert!(cmd_args.iter().any(|arg| arg == "gpt-5.2"));
+    }
+
+    #[test]
+    fn non_dry_run_passes_explicit_model_to_agent_runner() {
+        let prd = GithubIssue {
+            number: 42,
+            title: "PRD".into(),
+            body: "Product requirements".into(),
+        };
+        let issues = vec![prd, child(10, 42, &[])];
+        let github = MockGithub {
+            issues,
+            closed: HashSet::new(),
+        };
+        let agent = MockAgent {
+            ran: Cell::new(false),
+            received_model: RefCell::new(None),
+            error_on_run: true,
+        };
+        let config = WorkflowConfig {
+            prd: 42,
+            issue: 1,
+            repo: "foobar/repo",
+            base_branch: "main",
+            dry_run: false,
+            agent: Agent::Cursor,
+            model: Some("gpt-5.2"),
+            directives: "test directives",
+        };
+        let runtime = Runtime {
+            github: &github,
+            git: &MockGit,
+            agent_runner: &agent,
+        };
+        let err = run(config, runtime).unwrap_err();
+        assert!(err.to_string().contains("mock agent stopped"));
+        assert!(agent.ran.get());
+        assert_eq!(agent.received_model.borrow().as_deref(), Some("gpt-5.2"));
     }
 }

@@ -2,7 +2,7 @@
 
 [CI](https://github.com/Shaurya-Sethi/nightshift/actions/workflows/ci.yml)
 [License: MIT](LICENSE)
-[Rust: 2024 edition](https://www.rust-lang.org)
+[Rust 2024](https://www.rust-lang.org)
 
 Go to sleep with a backlog and wake up with merged PRs.
 
@@ -29,19 +29,20 @@ This places the `nightshift` binary in `~/.cargo/bin`, which is on your `$PATH` 
 ## Usage
 
 ```bash
-nightshift --prd 12 --agent claude
+nightshift --prd 12 --agent claude --model claude-sonnet-4-6
 ```
 
 
-| Flag            | Required | Default             | Description                                                                     |
-| --------------- | -------- | ------------------- | ------------------------------------------------------------------------------- |
-| `--prd`         | ✓        | n/a                 | The PRD issue number to work through                                            |
-| `--agent`       | ✓        | n/a                 | Which agent to use: `claude`, `codex`, `antigravity`, `cursor`, `pi`, `copilot` |
-| `--issue`       |          | `0`                 | Skip issues below this number (useful when resuming)                            |
-| `--repo`        |          | detected from `gh`  | Repository as `owner/name`                                                      |
-| `--base-branch` |          | `main`              | Branch to sync to before each issue                                             |
-| `--prompt-file` |          | built-in guidelines | File with extra instructions for your agent                                     |
-| `--dry-run`     |          | `false`             | Show what would run, without starting an agent                                  |
+| Flag            | Required | Default                   | Description                                                            |
+| --------------- | -------- | ------------------------- | ---------------------------------------------------------------------- |
+| `--prd`         | yes      | n/a                       | The PRD issue number to work through                                   |
+| `--agent`       | yes      | n/a                       | Which agent to use: `claude`, `codex`, `antigravity`, `cursor`, `pi`   |
+| `--model`       |          | agent's persisted default | Explicit model for agents that support non-interactive model selection |
+| `--issue`       |          | `0`                       | Skip issues below this number (useful when resuming)                   |
+| `--repo`        |          | detected from `gh`        | Repository as `owner/name`                                             |
+| `--base-branch` |          | `main`                    | Branch to sync to before each issue                                    |
+| `--prompt-file` |          | built-in guidelines       | File with extra instructions for your agent                            |
+| `--dry-run`     |          | `false`                   | Show what would run, without starting an agent                         |
 
 
 ## Supported Agents
@@ -49,15 +50,16 @@ nightshift --prd 12 --agent claude
 nightshift hands your agent a single prompt per issue. These agents work out of the box:
 
 
-| `--agent` value | Command run | Project                                                                                      |
-| --------------- | ----------- | -------------------------------------------------------------------------------------------- |
-| `claude`        | `claude`    | [Anthropic Claude Code](https://docs.anthropic.com/en/docs/claude-code)                      |
-| `codex`         | `codex`     | [OpenAI Codex CLI](https://github.com/openai/codex)                                          |
-| `antigravity`   | `agy`       | [Google Antigravity CLI](https://antigravity.google/blog/introducing-google-antigravity-cli) |
-| `cursor`        | `agent`     | [Cursor](https://cursor.com/cli)                                                             |
-| `pi`            | `pi`        | [Pi](https://pi.dev/)                                                                        |
-| `copilot`       | `copilot`   | [GitHub Copilot CLI](https://github.com/features/copilot/cli)                                |
+| `--agent` value | Command run | `--model` support | Project                                                                                      |
+| --------------- | ----------- | ----------------- | -------------------------------------------------------------------------------------------- |
+| `claude`        | `claude`    | yes               | [Anthropic Claude Code](https://docs.anthropic.com/en/docs/claude-code)                      |
+| `codex`         | `codex`     | yes               | [OpenAI Codex CLI](https://github.com/openai/codex)                                          |
+| `antigravity`   | `agy`       | no                | [Google Antigravity CLI](https://antigravity.google/blog/introducing-google-antigravity-cli) |
+| `cursor`        | `agent`     | yes               | [Cursor](https://cursor.com/cli)                                                             |
+| `pi`            | `pi`        | yes               | [Pi](https://pi.dev/)                                                                        |
 
+
+When `--model` is omitted, nightshift lets the selected agent use its persisted default model. When `--model` is provided, nightshift passes it through unchanged for agents with a documented non-interactive model flag. If an agent does not support that flag, nightshift fails fast and tells you to retry without `--model`.
 
 To add support for a new agent, see [CONTRIBUTING.md](CONTRIBUTING.md).
 

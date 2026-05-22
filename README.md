@@ -69,6 +69,11 @@ Each iteration starts from a clean state: nightshift checks out and pulls your b
 
 For the selected issue, nightshift constructs a unified prompt and pipes it to the coding agent via `stdin`. For details on prompt structures, default instructions, custom directives, and how nightshift manages isolated session context, see the [Context Management & Session Lifecycle Guide](docs/context-management.md).
 
+> [!NOTE]
+> **Terminal Output Behavior**: While an agent is running, you might only see `nightshift`'s orchestrator logs (such as issue selection and completion). Under the hood, `nightshift` inherits the agent's standard output (`stdout`) directly but pipes and silences its standard error (`stderr`) to capture errors/debug context.
+>
+> Because most coding agents write their real-time thinking, tool calls, and progress spinners to `stderr`, **these updates will be completely hidden from your terminal**. However, if a specific agent prints logs or outputs to `stdout` in its non-interactive automation mode, those logs *will* be visible on your screen. You can track progress through non-invasive git commands, but rest assured that your agent is working behind the scenes.
+
 After the agent exits, nightshift checks that the issue is actually closed on GitHub. If it is, the loop continues from step one. If not, nightshift stops and tells you; the agent may have exited cleanly but left the issue open, which usually means something needs your attention.
 
 Use `--dry-run` to see which issue would be selected and what the prompt looks like, without invoking an agent.

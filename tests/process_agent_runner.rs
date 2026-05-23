@@ -126,7 +126,7 @@ fn process_runner_passes_supported_model_through_unchanged() {
 }
 
 #[test]
-fn process_runner_surfaces_agent_stderr_and_model_hint() {
+fn process_runner_surfaces_exit_status_and_model_hint() {
     let _lock = env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -136,8 +136,9 @@ fn process_runner_surfaces_agent_stderr_and_model_hint() {
         .run(Agent::Claude, Some("sonnet"), "prompt")
         .expect_err("agent failure should bubble up")
         .to_string();
-    assert!(err.contains("cli said no"));
+    assert!(err.contains("exited with status"));
     assert!(err.contains("The agent may have rejected --model sonnet"));
+    assert!(!err.contains("cli said no"));
 }
 
 #[test]
@@ -151,7 +152,20 @@ fn process_runner_does_not_mask_early_model_rejection_as_stdin_failure() {
         .run(Agent::Claude, Some("sonnet"), &"x".repeat(1_000_000))
         .expect_err("early rejection should bubble up")
         .to_string();
-    assert!(err.contains("unknown option: --model sonnet"));
+    assert!(err.contains("exited with status"));
     assert!(err.contains("The agent may have rejected --model sonnet"));
     assert!(!err.contains("failed to write prompt to agent's stdin"));
+    assert!(!err.contains("unknown option"));
+}
+
+#[test]
+fn process_runner_completes_with_silent_noisy_agent() {
+    let _lock = env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let (_env, _temp_dir) = install_fake_claude("noisy_success", |_| {});
+
+    ProcessAgentRunner
+        .run(Agent::Claude, None, &"x".repeat(64 * 1024))
+        .expect("noisy agent stdout/stderr on null should not hang the runner");
 }

@@ -6,9 +6,8 @@
 //! a real process in production and a fake runner in tests.
 
 use clap::ValueEnum;
-use std::io::{Read, Write};
+use std::io::Write;
 use std::process::{Command, ExitStatus, Stdio};
-use std::thread;
 
 /// Coding-agent CLI variants supported by nightshift.
 #[derive(ValueEnum, Debug, Clone, Copy)]
@@ -120,13 +119,8 @@ fn append_model_hint(message: &mut String, model: Option<&str>) {
     }
 }
 
-fn agent_exit_error(status: ExitStatus, stderr: &[u8], model: Option<&str>) -> String {
-    let stderr = String::from_utf8_lossy(stderr).trim().to_string();
-    let mut message = if stderr.is_empty() {
-        format!("nightshift: agent command exited with status {status}.")
-    } else {
-        format!("nightshift: agent command failed: {stderr}")
-    };
+fn agent_exit_error(status: ExitStatus, model: Option<&str>) -> String {
+    let mut message = format!("nightshift: agent command exited with status {status}.");
     append_model_hint(&mut message, model);
     message
 }
@@ -136,20 +130,6 @@ fn stdin_write_error(write_err: std::io::Error, model: Option<&str>) -> String {
         format!("nightshift: failed to write prompt to agent's stdin: {write_err}. Exiting.");
     append_model_hint(&mut message, model);
     message
-}
-
-fn collect_stderr(mut stderr: impl Read + Send + 'static) -> thread::JoinHandle<Vec<u8>> {
-    thread::spawn(move || {
-        let mut buf = Vec::new();
-        let _ = stderr.read_to_end(&mut buf);
-        buf
-    })
-}
-
-fn join_stderr(handle: thread::JoinHandle<Vec<u8>>) -> Result<Vec<u8>, String> {
-    handle.join().map_err(|_| {
-        "nightshift: failed to read agent stderr while waiting for process. Exiting.".to_string()
-    })
 }
 
 /// Runs a rendered issue prompt with a selected [`Agent`].
@@ -201,8 +181,8 @@ impl AgentRunner for ProcessAgentRunner {
         let mut child = Command::new(cmd_name)
             .args(&cmd_args)
             .stdin(Stdio::piped())
-            .stdout(Stdio::inherit())
-            .stderr(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
             .spawn()
             .map_err(|e| {
                 format!(
@@ -210,8 +190,6 @@ impl AgentRunner for ProcessAgentRunner {
                     cmd_name, e
                 )
             })?;
-
-        let stderr_reader = child.stderr.take().map(collect_stderr);
 
         let write_result = if let Some(mut stdin) = child.stdin.take() {
             stdin.write_all(prompt.as_bytes())
@@ -226,20 +204,15 @@ impl AgentRunner for ProcessAgentRunner {
             )
         })?;
 
-        let stderr = stderr_reader
-            .map(join_stderr)
-            .transpose()?
-            .unwrap_or_default();
-
         if let Err(write_err) = write_result {
-            if !status.success() || !stderr.is_empty() {
-                return Err(agent_exit_error(status, &stderr, model).into());
+            if !status.success() {
+                return Err(agent_exit_error(status, model).into());
             }
             return Err(stdin_write_error(write_err, model).into());
         }
 
         if !status.success() {
-            return Err(agent_exit_error(status, &stderr, model).into());
+            return Err(agent_exit_error(status, model).into());
         }
 
         Ok(())

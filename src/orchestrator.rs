@@ -7,6 +7,7 @@
 //! and the post-agent check that the selected issue was closed.
 
 use crate::agent::{Agent, AgentRunner};
+use crate::console;
 use crate::git::GitOps;
 use crate::github::{GithubIssue, GithubIssues};
 use crate::parser::{extract_blockers, extract_parent_prd};
@@ -112,9 +113,11 @@ pub fn run(
         return Err(format!("nightshift: PRD issue {} not found", config.prd).into());
     };
 
-    println!("nightshift starting for PRD #{}...", config.prd);
+    console::session_start(config.prd);
 
     loop {
+        console::git_hygiene(config.repo, config.base_branch);
+
         if let Err(e) = runtime.git.ensure_hygiene(config.base_branch) {
             return Err(format!("nightshift: git hygiene check failed: {}. Exiting.", e).into());
         }
@@ -129,18 +132,12 @@ pub fn run(
 
         if candidates.is_empty() {
             if prd_has_open_issues {
-                println!(
-                    "nightshift: no candidates found starting from issue #{}, but
-                    some open issues still exist below this threshold.
-                    Loop complete.",
+                console::loop_complete(&format!(
+                    "No candidates from issue #{}; open issues remain below threshold",
                     config.issue
-                );
+                ));
             } else {
-                println!(
-                    "nightshift: all issues for PRD #{} are resolved.
-                    Loop complete.",
-                    config.prd
-                );
+                console::loop_complete(&format!("All issues for PRD #{} resolved", config.prd));
             }
             break;
         }
@@ -154,32 +151,24 @@ pub fn run(
             })?;
 
         let Some(selected_issue) = next_issue_to_solve else {
-            println!("nightshift: all remaining issues are blocked, loop complete.");
+            console::loop_complete("All remaining issues are blocked");
             break;
         };
 
-        println!(
-            "nightshift: solving issue #{} - {}",
-            selected_issue.number, selected_issue.title
-        );
+        let issue_run = console::IssueRun::begin(selected_issue.number, &selected_issue.title);
 
         let final_prompt =
             render_issue_prompt(config.repo, &prd_body, &selected_issue, config.directives);
 
-        save_prompt_copy(selected_issue.number, &final_prompt);
+        if let Some(path) = save_prompt_copy(selected_issue.number, &final_prompt) {
+            issue_run.meta(&format!("prompt {}", path.display()));
+        }
 
         if config.dry_run {
             let (cmd_name, cmd_args) = config.agent.get_command_with_model(config.model)?;
-            println!(
-                "nightshift: [DRY-RUN] Selected issue: #{} - {}",
-                selected_issue.number, selected_issue.title
-            );
-            println!(
-                "nightshift: [DRY-RUN] Would invoke agent: {} {}",
-                cmd_name,
-                cmd_args.join(" ")
-            );
-            println!("nightshift: [DRY-RUN] Prompt preview: \n{}", final_prompt);
+            let agent_cmd = format!("{cmd_name} {}", cmd_args.join(" "));
+            console::dry_run_issue(selected_issue.number, &selected_issue.title, &agent_cmd);
+            console::dry_run_prompt(&final_prompt);
             return Ok(());
         }
 
@@ -199,10 +188,7 @@ pub fn run(
             .into());
         }
 
-        println!(
-            "nightshift: issue #{} - {} completed",
-            selected_issue.number, selected_issue.title
-        );
+        issue_run.complete();
     }
 
     Ok(())

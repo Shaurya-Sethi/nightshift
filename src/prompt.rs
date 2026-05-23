@@ -102,14 +102,13 @@ pub fn render_issue_prompt(
 ///
 /// Failures are intentionally ignored because this is diagnostic output and
 /// should not stop the main workflow.
-pub fn save_prompt_copy(issue_number: u32, prompt: &str) {
+pub fn save_prompt_copy(issue_number: u32, prompt: &str) -> Option<PathBuf> {
     let mut temp_path: PathBuf = std::env::temp_dir();
     temp_path.push(format!("nightshift-prompt-{}.txt", issue_number));
 
-    if let Ok(mut file) = File::create(&temp_path) {
-        let _ = file.write_all(prompt.as_bytes());
-        println!("nightshift: saved prompt copy to {}", temp_path.display());
-    }
+    File::create(&temp_path)
+        .and_then(|mut file| file.write_all(prompt.as_bytes()).map(|_| temp_path))
+        .ok()
 }
 
 #[cfg(test)]

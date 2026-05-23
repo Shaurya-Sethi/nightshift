@@ -11,6 +11,8 @@
 pub mod agent;
 /// Command-line argument parsing for the nightshift binary.
 pub mod cli;
+/// Monochrome terminal output for orchestrator runs.
+pub mod console;
 /// Git workspace discovery and hygiene checks.
 pub mod git;
 /// GitHub issue access through the GitHub CLI.

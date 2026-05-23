@@ -47,7 +47,7 @@ Adding support for a new coding agent CLI requires command wiring, model handlin
     - Explicit `--model` is included in the command for supported agents and passed through unchanged.
     - Explicit `--model` is rejected for unsupported agents.
     - Omitted `--model` preserves the persisted-default command path.
-    - Agent-process failures surface stderr, and `--model` failures add only a soft retry hint.
+    - Agent-process failures surface exit status, and `--model` failures add only a soft retry hint.
 
 6. Update [`README.md`](README.md):
 

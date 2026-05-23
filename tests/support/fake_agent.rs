@@ -2,12 +2,13 @@
 //!
 //! Mode is selected with `NIGHTSHIFT_FAKE_MODE`:
 //! - `passthrough` (default): write argv (except program name) to `NIGHTSHIFT_FAKE_ARGS_FILE`, drain stdin
-//! - `stderr_fail`: print a fixed message to stderr and exit 23
-//! - `early_close`: print model-rejection stderr, exit 2 quickly so a large stdin write can fail
+//! - `stderr_fail`: write to stderr and exit 23
+//! - `early_close`: exit 2 quickly so a large stdin write can fail
+//! - `noisy_success`: write heavily to stdout/stderr, drain stdin, exit 0
 
 use std::env;
 use std::fs;
-use std::io::{self, Write, copy, stderr};
+use std::io::{self, Write, copy, stderr, stdout};
 use std::process::exit;
 
 fn drain_stdin() {
@@ -39,11 +40,22 @@ fn early_close() {
     exit(2);
 }
 
+const NOISY_MARKER: &str = "NIGHTSHIFT_FAKE_NOISY_OUTPUT";
+
+fn noisy_success() {
+    drain_stdin();
+    for _ in 0..512 {
+        let _ = writeln!(stdout(), "{NOISY_MARKER}");
+        let _ = writeln!(stderr(), "{NOISY_MARKER}");
+    }
+}
+
 fn main() {
     match env::var("NIGHTSHIFT_FAKE_MODE").as_deref() {
         Ok("passthrough") | Err(_) => passthrough(),
         Ok("stderr_fail") => stderr_fail(),
         Ok("early_close") => early_close(),
+        Ok("noisy_success") => noisy_success(),
         Ok(other) => {
             let _ = writeln!(stderr(), "unknown NIGHTSHIFT_FAKE_MODE: {other}");
             exit(1);

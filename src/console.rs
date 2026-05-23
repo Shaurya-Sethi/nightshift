@@ -1,7 +1,7 @@
 //! Monochrome terminal output for the nightshift CLI.
 //!
 //! Uses bold and dim ANSI attributes only so output stays readable in any
-//! terminal theme. Box drawing uses ASCII `+`, `-`, and `|` characters.
+//! terminal theme. Section headers use horizontal rules only.
 
 use std::io::{IsTerminal, Write};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -31,30 +31,23 @@ fn dim(text: &str) -> String {
     }
 }
 
-fn top_rule() -> String {
-    format!("+{}", "-".repeat(BORDER_WIDTH - 2))
+fn horizontal_rule() -> String {
+    "-".repeat(BORDER_WIDTH)
 }
 
-fn bottom_rule() -> String {
-    top_rule()
-}
-
-fn border_line(content: &str) -> String {
-    let inner = BORDER_WIDTH.saturating_sub(4);
-    let clipped = if content.len() > inner {
-        format!("{}...", &content[..inner.saturating_sub(3)])
+fn banner_title(content: &str) -> String {
+    let max_len = BORDER_WIDTH;
+    if content.len() > max_len {
+        format!("{}...", &content[..max_len.saturating_sub(3)])
     } else {
         content.to_string()
-    };
-    format!("| {clipped:<inner$} |", inner = inner)
+    }
 }
 
-fn print_rule(out: &mut impl Write, rule: &str) -> std::io::Result<()> {
-    writeln!(out, "{rule}")
-}
-
-fn print_border_line(out: &mut impl Write, content: &str) -> std::io::Result<()> {
-    writeln!(out, "{}", border_line(content))
+fn print_banner(out: &mut impl Write, title: &str) -> std::io::Result<()> {
+    writeln!(out, "{}", horizontal_rule())?;
+    writeln!(out, "{}", banner_title(title))?;
+    writeln!(out, "{}", horizontal_rule())
 }
 
 /// Formats a duration for issue-run footers.
@@ -91,9 +84,7 @@ fn format_timestamp() -> String {
 /// Prints the session header when a PRD loop starts.
 pub fn session_start(prd: u32) {
     let mut out = std::io::stdout().lock();
-    let _ = print_rule(&mut out, &top_rule());
-    let _ = print_border_line(&mut out, &bold(&format!("Nightshift  PRD #{prd}")));
-    let _ = print_rule(&mut out, &bottom_rule());
+    let _ = print_banner(&mut out, &bold(&format!("Nightshift  PRD #{prd}")));
     let _ = writeln!(out, "{}", dim(&format!("started {}", format_timestamp())));
 }
 
@@ -108,9 +99,7 @@ impl IssueRun {
     pub fn begin(number: u32, title: &str) -> Self {
         let mut out = std::io::stdout().lock();
         let _ = writeln!(out);
-        let _ = print_rule(&mut out, &top_rule());
-        let _ = print_border_line(&mut out, &bold(&format!("Issue #{number}  {title}")));
-        let _ = print_rule(&mut out, &bottom_rule());
+        let _ = print_banner(&mut out, &bold(&format!("Issue #{number}  {title}")));
         Self {
             number,
             started: Instant::now(),
@@ -128,26 +117,41 @@ impl IssueRun {
         let elapsed = format_elapsed(self.started.elapsed());
         let mut out = std::io::stdout().lock();
         let _ = writeln!(out);
-        let _ = print_rule(&mut out, &top_rule());
-        let _ = print_border_line(
+        let _ = print_banner(
             &mut out,
             &bold(&format!("Completed  issue #{}", self.number)),
         );
-        let _ = print_rule(&mut out, &bottom_rule());
         let _ = writeln!(out, "{}", dim(&format!("elapsed {elapsed}")));
     }
 }
 
-/// Prints a dry-run preview block without invoking an agent.
-pub fn dry_run_issue(number: u32, title: &str, agent_cmd: &str) {
+/// Prints the simulated solve order for a dry run, then the agent command preview.
+pub fn dry_run_planned_order(planned: &[(u32, &str)], blocked: &[(u32, &str)], agent_cmd: &str) {
     let mut out = std::io::stdout().lock();
     let _ = writeln!(out);
-    let _ = print_rule(&mut out, &top_rule());
-    let _ = print_border_line(
-        &mut out,
-        &bold(&format!("Dry run  issue #{number}  {title}")),
-    );
-    let _ = print_rule(&mut out, &bottom_rule());
+    let _ = print_banner(&mut out, &bold("Dry run  planned issue order"));
+
+    if planned.is_empty() {
+        let _ = writeln!(out, "{}", dim("(no issues would be solved)"));
+    } else {
+        for (step, (number, title)) in planned.iter().enumerate() {
+            let _ = writeln!(
+                out,
+                "{}",
+                dim(&format!("{}. issue #{number}  {title}", step + 1))
+            );
+        }
+    }
+
+    if !blocked.is_empty() {
+        let _ = writeln!(out);
+        let _ = writeln!(out, "{}", dim("blocked (not in plan)"));
+        for (number, title) in blocked {
+            let _ = writeln!(out, "{}", dim(&format!("- issue #{number}  {title}")));
+        }
+    }
+
+    let _ = writeln!(out);
     let _ = writeln!(out, "{}", dim(&format!("would invoke {agent_cmd}")));
 }
 
@@ -162,9 +166,7 @@ pub fn dry_run_prompt(prompt: &str) {
 pub fn loop_complete(message: &str) {
     let mut out = std::io::stdout().lock();
     let _ = writeln!(out);
-    let _ = print_rule(&mut out, &top_rule());
-    let _ = print_border_line(&mut out, &bold(message));
-    let _ = print_rule(&mut out, &bottom_rule());
+    let _ = print_banner(&mut out, &bold(message));
 }
 
 /// Prints git hygiene status in dim text.
@@ -197,10 +199,10 @@ mod tests {
     }
 
     #[test]
-    fn border_line_clips_long_content() {
-        let line = border_line(&"x".repeat(120));
-        assert!(line.starts_with('|'));
-        assert!(line.ends_with('|'));
-        assert!(line.len() <= BORDER_WIDTH + 2);
+    fn banner_title_clips_long_content() {
+        let title = banner_title(&"x".repeat(120));
+        assert!(!title.contains('|'));
+        assert!(title.len() <= BORDER_WIDTH);
+        assert!(title.ends_with("..."));
     }
 }

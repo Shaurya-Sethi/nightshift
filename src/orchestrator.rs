@@ -12,6 +12,7 @@ use crate::git::GitOps;
 use crate::github::{GithubIssue, GithubIssues};
 use crate::parser::{extract_blockers, extract_parent_prd};
 use crate::prompt::{render_issue_prompt, save_prompt_copy};
+use std::collections::HashSet;
 
 /// Configuration for one nightshift PRD loop.
 pub struct WorkflowConfig<'a> {
@@ -50,8 +51,9 @@ pub struct Runtime<'a> {
 ///
 /// Each iteration enforces git hygiene, fetches open `ready-for-agent` issues,
 /// filters children that declare the requested PRD parent, then selects the
-/// lowest-numbered unblocked child. Dry runs stop after printing the selected
-/// issue and prompt preview. Non-dry runs save a prompt copy, invoke the agent,
+/// lowest-numbered unblocked child. Dry runs print the full simulated solve order,
+/// the agent command preview, and the first planned issue's prompt, then exit.
+/// Non-dry runs save a prompt copy, invoke the agent,
 /// and require the selected GitHub issue to be closed before continuing.
 ///
 /// # Errors
@@ -115,6 +117,10 @@ pub fn run(
 
     console::session_start(config.prd);
 
+    if config.dry_run {
+        return run_dry_run(config, runtime, &prd_body);
+    }
+
     loop {
         console::git_hygiene(config.repo, config.base_branch);
 
@@ -164,14 +170,6 @@ pub fn run(
             issue_run.meta(&format!("prompt {}", path.display()));
         }
 
-        if config.dry_run {
-            let (cmd_name, cmd_args) = config.agent.get_command_with_model(config.model)?;
-            let agent_cmd = format!("{cmd_name} {}", cmd_args.join(" "));
-            console::dry_run_issue(selected_issue.number, &selected_issue.title, &agent_cmd);
-            console::dry_run_prompt(&final_prompt);
-            return Ok(());
-        }
-
         runtime
             .agent_runner
             .run(config.agent, config.model, &final_prompt)?;
@@ -189,6 +187,75 @@ pub fn run(
         }
 
         issue_run.complete();
+    }
+
+    Ok(())
+}
+
+/// Result of simulating which PRD child issues can be solved and in what order.
+pub(crate) struct SimulatedIssuePlan {
+    /// Issues that would be solved, in loop order.
+    pub planned: Vec<GithubIssue>,
+    /// Open candidates that simulation never reaches because blockers stay open.
+    pub blocked: Vec<GithubIssue>,
+}
+
+/// Runs a dry-run pass: planned order, agent command preview, and first-issue prompt.
+fn run_dry_run(
+    config: WorkflowConfig<'_>,
+    runtime: Runtime<'_>,
+    prd_body: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    console::git_hygiene(config.repo, config.base_branch);
+
+    if let Err(e) = runtime.git.ensure_hygiene(config.base_branch) {
+        return Err(format!("nightshift: git hygiene check failed: {}. Exiting.", e).into());
+    }
+
+    let issues = runtime
+        .github
+        .fetch_issues(config.repo)
+        .map_err(|e| format!("nightshift: failed to fetch issues: {}. Exiting.", e))?;
+
+    let (candidates, prd_has_open_issues) =
+        collect_prd_candidates(&issues, config.prd, config.issue);
+
+    if candidates.is_empty() {
+        if prd_has_open_issues {
+            console::loop_complete(&format!(
+                "No candidates from issue #{}; open issues remain below threshold",
+                config.issue
+            ));
+        } else {
+            console::loop_complete(&format!("All issues for PRD #{} resolved", config.prd));
+        }
+        return Ok(());
+    }
+
+    let plan = simulate_issue_order(&candidates, runtime.github, config.repo).map_err(|err| {
+        format!(
+            "nightshift: API or connection error while checking blockers: {}",
+            err
+        )
+    })?;
+
+    let (cmd_name, cmd_args) = config.agent.get_command_with_model(config.model)?;
+    let agent_cmd = format!("{cmd_name} {}", cmd_args.join(" "));
+    let planned: Vec<_> = plan
+        .planned
+        .iter()
+        .map(|issue| (issue.number, issue.title.as_str()))
+        .collect();
+    let blocked: Vec<_> = plan
+        .blocked
+        .iter()
+        .map(|issue| (issue.number, issue.title.as_str()))
+        .collect();
+    console::dry_run_planned_order(&planned, &blocked, &agent_cmd);
+
+    if let Some(first) = plan.planned.first() {
+        let final_prompt = render_issue_prompt(config.repo, prd_body, first, config.directives);
+        console::dry_run_prompt(&final_prompt);
     }
 
     Ok(())
@@ -231,6 +298,63 @@ pub(crate) fn pick_next_unblocked_issue(
         }
     }
     Ok(None)
+}
+
+fn issue_is_unblocked(
+    issue: &GithubIssue,
+    github: &dyn GithubIssues,
+    repo: &str,
+    simulated_closed: &HashSet<u32>,
+) -> Result<bool, Box<dyn std::error::Error>> {
+    let blockers = extract_blockers(&issue.body);
+    for &blocker in &blockers {
+        if simulated_closed.contains(&blocker) {
+            continue;
+        }
+        if !github.all_blockers_closed(repo, std::slice::from_ref(&blocker))? {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+/// Simulates the live loop's issue order: repeatedly pick the lowest unblocked
+/// candidate and treat it as solved until no candidate can advance.
+///
+/// Issues left in `blocked` have blockers that never clear during simulation
+/// (including circular dependencies among remaining candidates).
+pub(crate) fn simulate_issue_order(
+    candidates: &[GithubIssue],
+    github: &dyn GithubIssues,
+    repo: &str,
+) -> Result<SimulatedIssuePlan, Box<dyn std::error::Error>> {
+    let mut remaining: Vec<_> = candidates.to_vec();
+    remaining.sort_by_key(|issue| issue.number);
+    let mut planned = Vec::new();
+    let mut simulated_closed = HashSet::new();
+
+    loop {
+        let mut picked_idx = None;
+        for (idx, issue) in remaining.iter().enumerate() {
+            if issue_is_unblocked(issue, github, repo, &simulated_closed)? {
+                picked_idx = Some(idx);
+                break;
+            }
+        }
+
+        let Some(idx) = picked_idx else {
+            break;
+        };
+
+        let issue = remaining.remove(idx);
+        simulated_closed.insert(issue.number);
+        planned.push(issue);
+    }
+
+    Ok(SimulatedIssuePlan {
+        planned,
+        blocked: remaining,
+    })
 }
 
 #[cfg(test)]
@@ -356,6 +480,49 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(picked.number, 15);
+    }
+
+    #[test]
+    fn simulate_issue_order_respects_blocker_chain() {
+        let blocked = child(11, 42, &[10]);
+        let first = child(10, 42, &[]);
+        let github = MockGithub {
+            issues: vec![],
+            closed: HashSet::new(),
+        };
+        let plan = simulate_issue_order(&[blocked.clone(), first.clone()], &github, "foobar/repo")
+            .unwrap();
+        assert_eq!(
+            plan.planned.iter().map(|i| i.number).collect::<Vec<_>>(),
+            vec![10, 11]
+        );
+        assert!(plan.blocked.is_empty());
+    }
+
+    #[test]
+    fn simulate_issue_order_leaves_circular_dependencies_blocked() {
+        let a = child(10, 42, &[11]);
+        let b = child(11, 42, &[10]);
+        let github = MockGithub {
+            issues: vec![],
+            closed: HashSet::new(),
+        };
+        let plan = simulate_issue_order(&[a, b], &github, "foobar/repo").unwrap();
+        assert!(plan.planned.is_empty());
+        assert_eq!(plan.blocked.len(), 2);
+    }
+
+    #[test]
+    fn simulate_issue_order_omits_issues_with_permanent_external_blockers() {
+        let stuck = child(10, 42, &[99]);
+        let github = MockGithub {
+            issues: vec![],
+            closed: HashSet::new(),
+        };
+        let plan =
+            simulate_issue_order(std::slice::from_ref(&stuck), &github, "foobar/repo").unwrap();
+        assert!(plan.planned.is_empty());
+        assert_eq!(plan.blocked[0].number, 10);
     }
 
     #[test]

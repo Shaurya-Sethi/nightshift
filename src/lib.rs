@@ -1,11 +1,10 @@
 #![warn(missing_docs)]
 
 //! Nightshift runs a maintainers' loop over GitHub issues that belong to a PRD.
-//! It finds child issues by reading structured markdown in each issue body, gates
-//! work on any declared blockers, renders a prompt with PRD context, and invokes
-//! a coding agent to complete the selected issue. Issue bodies are expected to
-//! follow the parser contract described in [`parser`], especially the `Parent`
-//! and `Blocked by` sections used by the orchestrator.
+//! It finds child issues from native GitHub `parent` links, gates work on
+//! `blockedBy` relationships, renders a prompt with PRD context, and invokes
+//! a coding agent to complete the selected issue. Selection is described in
+//! [`parser`].
 
 /// Agent command selection and process execution.
 pub mod agent;
@@ -19,7 +18,7 @@ pub mod git;
 pub mod github;
 /// The PRD child-issue selection and agent execution loop.
 pub mod orchestrator;
-/// Structured issue-body parsing for PRD parents and blockers.
+/// Next-issue selection from native GitHub relationship JSON.
 pub mod parser;
 /// Prompt rendering and directive loading for agent runs.
 pub mod prompt;

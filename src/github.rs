@@ -2,28 +2,33 @@
 //!
 //! This module defines the issue shape consumed by [`crate::orchestrator`] and
 //! the [`crate::github::GithubIssues`] adapter trait used in tests and production. The
-//! production adapter shells out to `gh issue list` for open `ready-for-agent`
-//! issues, `gh issue view` for blocker and completion checks, and `gh repo view`
+//! production adapter shells out to `gh issue list` for the open `ready-for-agent`
+//! graph, `gh issue view` for the PRD body and completion checks, and `gh repo view`
 //! when the repository slug is not passed explicitly.
 
 use serde::Deserialize;
 use serde_json::from_slice;
 use std::process::Command;
 
-/// Open GitHub issue data needed by the parser and prompt renderer.
+/// Open GitHub issue data needed by the prompt renderer.
 #[derive(Debug, Deserialize, Clone)]
 pub struct GithubIssue {
     /// GitHub issue number, used for ordering, parent references, and prompts.
     pub number: u32,
     /// GitHub issue title shown in logs and included in the agent prompt.
     pub title: String,
-    /// Markdown issue body parsed for parent and blocker sections.
+    /// Markdown issue body included in the agent prompt.
     pub body: String,
 }
 
 #[derive(Deserialize)]
 struct IssueState {
     state: String,
+}
+
+#[derive(Deserialize)]
+struct IssueBody {
+    body: Option<String>,
 }
 
 /// GitHub operations required by the orchestrator.
@@ -34,17 +39,17 @@ struct IssueState {
 /// # Examples
 ///
 /// ```rust
-/// # use nightshift::github::{GithubIssue, GithubIssues};
+/// # use nightshift::github::GithubIssues;
 /// # struct EmptyGithub;
 /// # impl GithubIssues for EmptyGithub {
 /// #     fn resolve_repo(&self, repo: Option<&str>) -> Result<String, Box<dyn std::error::Error>> {
 /// #         Ok(repo.unwrap_or("owner/repo").to_string())
 /// #     }
-/// #     fn fetch_issues(&self, _repo: &str) -> Result<Vec<GithubIssue>, Box<dyn std::error::Error>> {
-/// #         Ok(Vec::new())
+/// #     fn fetch_issues(&self, _repo: &str) -> Result<String, Box<dyn std::error::Error>> {
+/// #         Ok("[]".to_string())
 /// #     }
-/// #     fn all_blockers_closed(&self, _repo: &str, _blockers: &[u32]) -> Result<bool, Box<dyn std::error::Error>> {
-/// #         Ok(true)
+/// #     fn fetch_issue_body(&self, _repo: &str, _issue_number: u32) -> Result<String, Box<dyn std::error::Error>> {
+/// #         Ok(String::new())
 /// #     }
 /// #     fn is_issue_closed(&self, _repo: &str, _issue_number: u32) -> Result<bool, Box<dyn std::error::Error>> {
 /// #         Ok(false)
@@ -60,16 +65,17 @@ pub trait GithubIssues {
     /// Implementations should return the provided slug when present, or discover
     /// the current repository when possible.
     fn resolve_repo(&self, repo: Option<&str>) -> Result<String, Box<dyn std::error::Error>>;
-    /// Fetches open issues that nightshift may consider for the PRD loop.
+    /// Fetches the raw `gh issue list` JSON for open `ready-for-agent` issues.
     ///
-    /// The production adapter limits this to issues labeled `ready-for-agent`.
-    fn fetch_issues(&self, repo: &str) -> Result<Vec<GithubIssue>, Box<dyn std::error::Error>>;
-    /// Returns whether every issue number in `blockers` is closed.
-    fn all_blockers_closed(
+    /// The payload includes native `parent` and `blockedBy` fields used by
+    /// [`crate::parser`].
+    fn fetch_issues(&self, repo: &str) -> Result<String, Box<dyn std::error::Error>>;
+    /// Returns the markdown body of a single issue, used for PRD context.
+    fn fetch_issue_body(
         &self,
         repo: &str,
-        blockers: &[u32],
-    ) -> Result<bool, Box<dyn std::error::Error>>;
+        issue_number: u32,
+    ) -> Result<String, Box<dyn std::error::Error>>;
     /// Returns whether a selected child issue is closed after the agent exits.
     fn is_issue_closed(
         &self,
@@ -120,7 +126,7 @@ impl GithubIssues for GhCliAdapter {
         Ok(repo.to_string())
     }
 
-    fn fetch_issues(&self, repo: &str) -> Result<Vec<GithubIssue>, Box<dyn std::error::Error>> {
+    fn fetch_issues(&self, repo: &str) -> Result<String, Box<dyn std::error::Error>> {
         let output = Command::new("gh")
             .args([
                 "issue",
@@ -128,7 +134,7 @@ impl GithubIssues for GhCliAdapter {
                 "-R",
                 repo,
                 "--json",
-                "number,title,body",
+                "number,title,body,parent,blockedBy",
                 "--label",
                 "ready-for-agent",
                 "--state",
@@ -141,44 +147,40 @@ impl GithubIssues for GhCliAdapter {
             return Err(format!("Failed to fetch issues: {}", err_msg).into());
         }
 
-        let issues = from_slice(&output.stdout)?;
-        Ok(issues)
+        let json = String::from_utf8(output.stdout)
+            .map_err(|e| format!("nightshift: invalid UTF-8 output from gh: {}", e))?;
+        Ok(json)
     }
 
-    fn all_blockers_closed(
+    fn fetch_issue_body(
         &self,
         repo: &str,
-        blockers: &[u32],
-    ) -> Result<bool, Box<dyn std::error::Error>> {
-        for blocker in blockers {
-            let output = Command::new("gh")
-                .args([
-                    "issue",
-                    "view",
-                    &blocker.to_string(),
-                    "-R",
-                    repo,
-                    "--json",
-                    "state",
-                ])
-                .output()?;
+        issue_number: u32,
+    ) -> Result<String, Box<dyn std::error::Error>> {
+        let output = Command::new("gh")
+            .args([
+                "issue",
+                "view",
+                &issue_number.to_string(),
+                "-R",
+                repo,
+                "--json",
+                "body",
+            ])
+            .output()?;
 
-            if !output.status.success() {
-                let err_msg = String::from_utf8_lossy(&output.stderr);
-                eprintln!(
-                    "nightshift: failed to check blocker #{}: {}",
-                    blocker, err_msg
-                );
-                return Err(Box::new(std::io::Error::other("failed to check blocker")));
-            }
-
-            let issue_state: IssueState = from_slice(&output.stdout)?;
-            if issue_state.state.to_lowercase() != "closed" {
-                return Ok(false);
-            }
+        if !output.status.success() {
+            let err_msg = String::from_utf8_lossy(&output.stderr);
+            return Err(format!(
+                "nightshift: failed to fetch issue #{}: {}",
+                issue_number,
+                err_msg.trim()
+            )
+            .into());
         }
 
-        Ok(true)
+        let issue_body: IssueBody = from_slice(&output.stdout)?;
+        Ok(issue_body.body.unwrap_or_default())
     }
 
     fn is_issue_closed(

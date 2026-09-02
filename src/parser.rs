@@ -1,287 +1,385 @@
-//! Parses the structured markdown contract used to connect PRDs, child issues,
-//! and blockers.
+//! Selects the next PRD child issue from native GitHub relationship JSON.
 //!
-//! Child issue bodies declare their PRD parent in a `Parent` section and their
-//! dependencies in a `Blocked by` section. Section matching is case-insensitive
-//! and currently substring-based, so a line containing `transparent` can start a
-//! `parent` capture, and a line containing `unblocked by` can start a
-//! `blocked by` capture. Once a section is found, issue numbers of the form
-//! `#123` are captured from that line and following lines until the next
-//! markdown header that starts with one to six `#` characters followed by a
-//! space.
-//!
-//! [`crate::parser::extract_parent_prd`] returns the first captured parent
-//! number because the orchestrator treats a child issue as belonging to a single
-//! PRD. [`crate::parser::extract_blockers`] returns every blocker number in
-//! encounter order, preserving order across multiple numbers on one line and
-//! across multiple lines. Fenced code blocks are not special to the parser, so
-//! `#123` inside a captured section is treated the same as any other issue
-//! reference until the next markdown header.
+//! Membership is `parent.number == prd` (direct children only). Ordering uses
+//! `blockedBy.nodes[].state`: an issue is ready when every blocker node is
+//! closed. Issue bodies are not parsed.
 
-use regex::Regex;
+use std::collections::HashSet;
+use std::error::Error;
 
-/// Extracts issue numbers from a named issue-body section.
+use serde::Deserialize;
+
+use crate::github::GithubIssue;
+
+#[derive(Debug, Deserialize)]
+struct ListedIssue {
+    number: u32,
+    #[serde(default)]
+    title: String,
+    #[serde(default)]
+    body: Option<String>,
+    parent: Option<ParentRef>,
+    #[serde(rename = "blockedBy", default)]
+    blocked_by: BlockedBy,
+}
+
+#[derive(Debug, Deserialize)]
+struct ParentRef {
+    number: u32,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct BlockedBy {
+    #[serde(default)]
+    nodes: Vec<BlockerNode>,
+}
+
+#[derive(Debug, Deserialize)]
+struct BlockerNode {
+    number: u32,
+    #[serde(default)]
+    state: String,
+}
+
+/// Planned vs leftover issues for a dry-run of the live selection loop.
+pub struct IssuePlan {
+    /// Issues that would be solved, in loop order.
+    pub planned: Vec<GithubIssue>,
+    /// Open candidates that simulation never reaches because blockers stay open.
+    pub blocked: Vec<GithubIssue>,
+}
+
+fn parse_issues(json: &str) -> Result<Vec<ListedIssue>, Box<dyn Error>> {
+    serde_json::from_str(json)
+        .map_err(|err| format!("nightshift: failed to parse issue list: {err}").into())
+}
+
+fn to_github_issue(issue: &ListedIssue) -> GithubIssue {
+    GithubIssue {
+        number: issue.number,
+        title: issue.title.clone(),
+        body: issue.body.clone().unwrap_or_default(),
+    }
+}
+
+fn is_prd_child(issue: &ListedIssue, prd: u32) -> bool {
+    issue
+        .parent
+        .as_ref()
+        .is_some_and(|parent| parent.number == prd)
+}
+
+fn is_ready(issue: &ListedIssue, simulated_closed: &HashSet<u32>) -> bool {
+    issue.blocked_by.nodes.iter().all(|blocker| {
+        simulated_closed.contains(&blocker.number) || blocker.state.eq_ignore_ascii_case("closed")
+    })
+}
+
+/// Collects open child issues for `prd` and reports whether any child exists.
 ///
-/// Use this when adding parser behavior that needs the same section-capture
-/// rules as the orchestrator: case-insensitive substring section matching,
-/// capture from the matching line, and stop at the next markdown header.
-/// Numbers are returned in the order their `#123` references appear.
+/// Candidates are direct children (`parent.number == prd`) whose number is at
+/// least `min_issue`. The boolean is true when any direct child exists, including
+/// those below the floor.
+///
+/// # Errors
+///
+/// Returns an error when `json` is not a GitHub issue-list array.
 ///
 /// # Examples
 ///
 /// ```rust
-/// let body = "## Blocked by\n#10 and #11\n\n## Notes\n#99";
-///
-/// assert_eq!(
-///     nightshift::parser::extract_section_issue_numbers(body, "blocked by"),
-///     vec![10, 11]
-/// );
+/// let json = r#"[{"number":10,"title":"A","body":"x","parent":{"number":42},"blockedBy":{"nodes":[]}}]"#;
+/// let (candidates, has_open) = nightshift::parser::collect_prd_candidates(json, 42, 10).unwrap();
+/// assert!(has_open);
+/// assert_eq!(candidates[0].number, 10);
 /// ```
-pub fn extract_section_issue_numbers(body: &str, section_name: &str) -> Vec<u32> {
-    let mut numbers = Vec::new();
-    let mut capturing: bool = false;
-
-    let re_num = Regex::new(r"#([0-9]+)").unwrap();
-    let re_header = Regex::new(r"^#{1,6}\s").unwrap();
-
-    // Keep number scanning shared so the matching header line and captured body
-    // lines follow identical `#123` extraction rules.
-    let mut scan_line = |line: &str| {
-        for cap in re_num.captures_iter(line) {
-            if let Ok(num) = cap[1].parse::<u32>() {
-                numbers.push(num);
+pub fn collect_prd_candidates(
+    json: &str,
+    prd: u32,
+    min_issue: u32,
+) -> Result<(Vec<GithubIssue>, bool), Box<dyn Error>> {
+    let issues = parse_issues(json)?;
+    let mut candidates = Vec::new();
+    let mut has_open_children = false;
+    for issue in &issues {
+        if is_prd_child(issue, prd) {
+            has_open_children = true;
+            if issue.number >= min_issue {
+                candidates.push(to_github_issue(issue));
             }
         }
-    };
-
-    for line in body.lines() {
-        if line.to_lowercase().contains(&section_name.to_lowercase()) {
-            capturing = true;
-            scan_line(line);
-            continue;
-        }
-
-        if capturing && re_header.is_match(line) {
-            capturing = false;
-        }
-
-        if capturing {
-            scan_line(line);
-        }
     }
-    numbers
+    Ok((candidates, has_open_children))
 }
 
-/// Returns the PRD issue number declared by a child issue body.
+/// Returns the lowest-numbered ready child of `prd` at or above `min_issue`.
 ///
-/// Nightshift uses this to decide whether an open issue belongs under the target
-/// PRD. If multiple numbers are captured from the `Parent` section, the first
-/// number wins. Returns [`None`] when no matching section or number is found.
+/// Ready means every `blockedBy` node is closed. Blockers outside the PRD set
+/// still count. Returns [`None`] when no child is ready.
+///
+/// # Errors
+///
+/// Returns an error when `json` is not a GitHub issue-list array.
 ///
 /// # Examples
 ///
 /// ```rust
-/// let body = "## Parent\n#42\n#99\n";
-///
-/// assert_eq!(nightshift::parser::extract_parent_prd(body), Some(42));
+/// let json = r#"[{"number":11,"title":"B","parent":{"number":42},"blockedBy":{"nodes":[]}},{"number":10,"title":"A","parent":{"number":42},"blockedBy":{"nodes":[]}}]"#;
+/// assert_eq!(nightshift::parser::pick_next(json, 42, 0).unwrap(), Some(10));
 /// ```
-pub fn extract_parent_prd(body: &str) -> Option<u32> {
-    extract_section_issue_numbers(body, "parent")
-        .into_iter()
-        .next()
+pub fn pick_next(json: &str, prd: u32, min_issue: u32) -> Result<Option<u32>, Box<dyn Error>> {
+    let issues = parse_issues(json)?;
+    let mut ready: Vec<u32> = issues
+        .iter()
+        .filter(|issue| is_prd_child(issue, prd) && issue.number >= min_issue)
+        .filter(|issue| is_ready(issue, &HashSet::new()))
+        .map(|issue| issue.number)
+        .collect();
+    ready.sort_unstable();
+    Ok(ready.into_iter().next())
 }
 
-/// Returns blocker issue numbers declared by a child issue body.
+/// Simulates the live loop: repeatedly pick the lowest ready child until none remain.
 ///
-/// Nightshift checks these issue numbers before selecting a candidate for agent
-/// work. The order of `#123` references is preserved, including multiple
-/// references on one line.
+/// Issues left in [`IssuePlan::blocked`] have blockers that never close during
+/// simulation (open external blockers or cycles among remaining candidates).
 ///
-/// # Examples
+/// # Errors
 ///
-/// ```rust
-/// let body = "## Blocked by\n#3\n#1, #2\n";
+/// Returns an error when `json` is not a GitHub issue-list array.
+pub fn plan_order(json: &str, prd: u32, min_issue: u32) -> Result<IssuePlan, Box<dyn Error>> {
+    let issues = parse_issues(json)?;
+    let mut remaining: Vec<&ListedIssue> = issues
+        .iter()
+        .filter(|issue| is_prd_child(issue, prd) && issue.number >= min_issue)
+        .collect();
+    remaining.sort_by_key(|issue| issue.number);
+
+    let mut planned = Vec::new();
+    let mut simulated_closed = HashSet::new();
+
+    loop {
+        let picked_idx = remaining
+            .iter()
+            .position(|issue| is_ready(issue, &simulated_closed));
+        let Some(idx) = picked_idx else {
+            break;
+        };
+        let issue = remaining.remove(idx);
+        simulated_closed.insert(issue.number);
+        planned.push(to_github_issue(issue));
+    }
+
+    Ok(IssuePlan {
+        planned,
+        blocked: remaining
+            .iter()
+            .map(|issue| to_github_issue(issue))
+            .collect(),
+    })
+}
+
+/// Returns `{number, title, body}` for `number` in the issue-list JSON.
 ///
-/// assert_eq!(nightshift::parser::extract_blockers(body), vec![3, 1, 2]);
-/// ```
-pub fn extract_blockers(body: &str) -> Vec<u32> {
-    extract_section_issue_numbers(body, "blocked by")
+/// # Errors
+///
+/// Returns an error when `json` is not a GitHub issue-list array.
+pub fn issue(json: &str, number: u32) -> Result<Option<GithubIssue>, Box<dyn Error>> {
+    let issues = parse_issues(json)?;
+    Ok(issues
+        .iter()
+        .find(|issue| issue.number == number)
+        .map(to_github_issue))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
-    #[test]
-    fn parent_h2_header_first_number_wins() {
-        let body = r#"## Parent
-#42
-#99
-"#;
-        assert_eq!(extract_parent_prd(body), Some(42));
+    fn graph(issues: &[serde_json::Value]) -> String {
+        serde_json::Value::Array(issues.to_vec()).to_string()
+    }
+
+    fn child(
+        number: u32,
+        parent: Option<u32>,
+        blockers: &[(u32, &str)],
+        body: &str,
+    ) -> serde_json::Value {
+        let nodes: Vec<serde_json::Value> = blockers
+            .iter()
+            .map(|(blocker, state)| {
+                json!({
+                    "number": blocker,
+                    "state": state,
+                    "title": format!("Issue {blocker}"),
+                    "url": "https://example.invalid"
+                })
+            })
+            .collect();
+        let total = nodes.len();
+        json!({
+            "number": number,
+            "title": format!("Child {number}"),
+            "body": body,
+            "parent": parent.map(|prd| json!({ "number": prd, "title": "PRD" })),
+            "blockedBy": { "nodes": nodes, "totalCount": total }
+        })
     }
 
     #[test]
-    fn parent_h3_lowercase_header() {
-        let body = r#"### parent
-#7
-"#;
-        assert_eq!(extract_parent_prd(body), Some(7));
+    fn blocker_closed_issue_is_selectable() {
+        let json = graph(&[child(10, Some(42), &[(7, "CLOSED")], "Do the work.")]);
+        assert_eq!(pick_next(&json, 42, 0).unwrap(), Some(10));
+        assert!(!json.contains("## Parent"));
+        assert!(!json.contains("## Blocked by"));
     }
 
     #[test]
-    fn parent_inline_on_same_line() {
-        let body = "Parent: #42\n\nSome description.\n";
-        assert_eq!(extract_parent_prd(body), Some(42));
+    fn blocker_open_issue_is_not_selectable() {
+        let json = graph(&[child(10, Some(42), &[(7, "OPEN")], "Do the work.")]);
+        assert_eq!(pick_next(&json, 42, 0).unwrap(), None);
     }
 
     #[test]
-    fn parent_case_insensitive_section_name() {
-        let body = r#"## PARENT
-#42
-"#;
-        assert_eq!(extract_parent_prd(body), Some(42));
+    fn two_ready_candidates_lower_number_wins() {
+        let json = graph(&[
+            child(20, Some(42), &[], "Later."),
+            child(15, Some(42), &[], "Earlier."),
+        ]);
+        assert_eq!(pick_next(&json, 42, 0).unwrap(), Some(15));
     }
 
     #[test]
-    fn parent_stops_at_next_markdown_header() {
-        let body = r#"## Parent
-#42
-
-## Notes
-#99 is unrelated
-"#;
-        assert_eq!(extract_parent_prd(body), Some(42));
-        assert_eq!(extract_section_issue_numbers(body, "parent"), vec![42]);
+    fn external_open_blocker_is_not_selectable() {
+        let json = graph(&[child(
+            10,
+            Some(42),
+            &[(99, "OPEN")],
+            "Depends on outside work.",
+        )]);
+        assert_eq!(pick_next(&json, 42, 0).unwrap(), None);
+        let plan = plan_order(&json, 42, 0).unwrap();
+        assert!(plan.planned.is_empty());
+        assert_eq!(plan.blocked[0].number, 10);
     }
 
     #[test]
-    fn parent_missing_section_returns_none() {
-        let body = "## Task\n\nImplement the feature.\n";
-        assert_eq!(extract_parent_prd(body), None);
+    fn external_closed_blocker_is_selectable() {
+        let json = graph(&[child(
+            10,
+            Some(42),
+            &[(99, "CLOSED")],
+            "Outside work is done.",
+        )]);
+        assert_eq!(pick_next(&json, 42, 0).unwrap(), Some(10));
     }
 
     #[test]
-    fn parent_empty_body_returns_none() {
-        assert_eq!(extract_parent_prd(""), None);
-        assert!(extract_blockers("").is_empty());
+    fn ready_set_empty_open_children_remain_does_not_spin() {
+        let json = graph(&[
+            child(10, Some(42), &[(11, "OPEN")], "A"),
+            child(11, Some(42), &[(10, "OPEN")], "B"),
+        ]);
+        assert_eq!(pick_next(&json, 42, 0).unwrap(), None);
+        let plan = plan_order(&json, 42, 0).unwrap();
+        assert!(plan.planned.is_empty());
+        assert_eq!(plan.blocked.len(), 2);
     }
 
     #[test]
-    fn parent_wrong_prd_still_parsed_for_orchestrator_filter() {
-        let body = r#"## Parent
-#99
-"#;
-        assert_eq!(extract_parent_prd(body), Some(99));
+    fn prd_with_no_children_returns_empty_plan() {
+        let json = graph(&[child(10, Some(99), &[], "Other PRD.")]);
+        let (candidates, has_open) = collect_prd_candidates(&json, 42, 0).unwrap();
+        assert!(!has_open);
+        assert!(candidates.is_empty());
+        let plan = plan_order(&json, 42, 0).unwrap();
+        assert!(plan.planned.is_empty());
+        assert!(plan.blocked.is_empty());
+        assert_eq!(pick_next(&json, 42, 0).unwrap(), None);
     }
 
     #[test]
-    fn blockers_h2_multiple_on_one_line_order_preserved() {
-        let body = r#"## Parent
-#42
-
-## Blocked by
-#10 and #11
-"#;
-        assert_eq!(extract_blockers(body), vec![10, 11]);
+    fn empty_list_is_no_children() {
+        let (candidates, has_open) = collect_prd_candidates("[]", 42, 0).unwrap();
+        assert!(!has_open);
+        assert!(candidates.is_empty());
     }
 
     #[test]
-    fn blockers_multiple_lines_order_preserved() {
-        let body = r#"## Parent
-#42
-
-## Blocked by
-#3
-#1
-#2
-"#;
-        assert_eq!(extract_blockers(body), vec![3, 1, 2]);
+    fn circular_dependencies_stay_blocked() {
+        let json = graph(&[
+            child(10, Some(42), &[(11, "OPEN")], "A"),
+            child(11, Some(42), &[(10, "OPEN")], "B"),
+        ]);
+        let plan = plan_order(&json, 42, 0).unwrap();
+        assert!(plan.planned.is_empty());
+        assert_eq!(plan.blocked.len(), 2);
     }
 
     #[test]
-    fn blockers_case_insensitive_section_name() {
-        let body = r#"## BLOCKED BY
-#5
-"#;
-        assert_eq!(extract_blockers(body), vec![5]);
+    fn issue_floor_excludes_child_but_records_open_work() {
+        let json = graph(&[
+            child(5, Some(42), &[], "Below floor."),
+            child(10, Some(42), &[], "At floor."),
+            child(11, Some(99), &[], "Other PRD."),
+            child(12, Some(42), &[], "Above floor."),
+        ]);
+        let (candidates, has_open) = collect_prd_candidates(&json, 42, 10).unwrap();
+        assert!(has_open);
+        assert_eq!(
+            candidates
+                .iter()
+                .map(|issue| issue.number)
+                .collect::<Vec<_>>(),
+            vec![10, 12]
+        );
     }
 
     #[test]
-    fn blockers_stops_at_next_header() {
-        let body = r#"## Blocked by
-#10
-
-## Acceptance criteria
-#999
-"#;
-        assert_eq!(extract_blockers(body), vec![10]);
+    fn plan_order_respects_blocker_chain() {
+        let json = graph(&[
+            child(11, Some(42), &[(10, "OPEN")], "Second."),
+            child(10, Some(42), &[], "First."),
+        ]);
+        let plan = plan_order(&json, 42, 0).unwrap();
+        assert_eq!(
+            plan.planned
+                .iter()
+                .map(|issue| issue.number)
+                .collect::<Vec<_>>(),
+            vec![10, 11]
+        );
+        assert!(plan.blocked.is_empty());
     }
 
     #[test]
-    fn blockers_missing_section_empty() {
-        let body = r#"## Parent
-#42
-"#;
-        assert!(extract_blockers(body).is_empty());
+    fn grandchild_is_not_a_member() {
+        let json = graph(&[child(10, Some(7), &[], "Parent is a child, not the PRD.")]);
+        let (candidates, has_open) = collect_prd_candidates(&json, 42, 0).unwrap();
+        assert!(!has_open);
+        assert!(candidates.is_empty());
     }
 
     #[test]
-    fn blockers_substring_in_unrelated_line_starts_capture() {
-        // Current matcher is substring-based: "unblocked by design" contains "blocked by".
-        let body = r#"Discussion: unblocked by design after #77
-
-## Parent
-#42
-"#;
-        assert_eq!(extract_blockers(body), vec![77]);
+    fn issue_lookup_returns_title_and_body() {
+        let json = graph(&[child(10, Some(42), &[], "Task text.")]);
+        let found = issue(&json, 10).unwrap().unwrap();
+        assert_eq!(found.number, 10);
+        assert_eq!(found.body, "Task text.");
+        assert!(issue(&json, 99).unwrap().is_none());
     }
 
     #[test]
-    fn parent_substring_in_unrelated_word_starts_capture() {
-        // "transparent" contains "parent"; numbers on that line are captured.
-        let body = r#"transparent layer tracks #55
-
-## Parent
-#42
-"#;
-        assert_eq!(extract_parent_prd(body), Some(55));
+    fn malformed_json_is_an_error() {
+        let err = pick_next("not-json", 42, 0).unwrap_err();
+        assert!(err.to_string().contains("failed to parse issue list"));
     }
 
     #[test]
-    fn hash_in_fenced_code_inside_parent_section_before_next_header() {
-        let body = r#"## Parent
-#42
-
-```
-issue #999 in code fence
-```
-
-## Blocked by
-#10
-"#;
-        assert_eq!(extract_parent_prd(body), Some(42));
-        assert_eq!(extract_section_issue_numbers(body, "parent"), vec![42, 999]);
-        assert_eq!(extract_blockers(body), vec![10]);
-    }
-
-    #[test]
-    fn realistic_child_issue_body() {
-        let body = r#"# Add login API
-
-## Parent
-#42
-
-## Blocked by
-#10, #11
-
-## Description
-Depends on auth schema from #10.
-
-## Acceptance criteria
-- [ ] Endpoint returns 401 without token
-"#;
-        assert_eq!(extract_parent_prd(body), Some(42));
-        assert_eq!(extract_blockers(body), vec![10, 11]);
+    fn closed_state_is_case_insensitive() {
+        let json = graph(&[child(10, Some(42), &[(7, "closed")], "Done blocker.")]);
+        assert_eq!(pick_next(&json, 42, 0).unwrap(), Some(10));
     }
 }

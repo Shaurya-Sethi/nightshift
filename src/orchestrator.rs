@@ -1,7 +1,7 @@
 //! Coordinates the PRD issue loop.
 //!
 //! The orchestrator fetches ready GitHub issues, uses [`crate::parser`] to keep
-//! only child issues for the requested PRD, skips children whose blockers are
+//! only direct children of the requested PRD, skips children whose blockers are
 //! still open, and invokes the configured agent with a rendered prompt. It owns
 //! workflow policy such as candidate ordering, dry-run behavior, git hygiene,
 //! and the post-agent check that the selected issue was closed.
@@ -9,10 +9,9 @@
 use crate::agent::{Agent, AgentRunner};
 use crate::console;
 use crate::git::GitOps;
-use crate::github::{GithubIssue, GithubIssues};
-use crate::parser::{extract_blockers, extract_parent_prd};
+use crate::github::GithubIssues;
+use crate::parser::{collect_prd_candidates, issue, pick_next, plan_order};
 use crate::prompt::{render_issue_prompt, save_prompt_copy};
-use std::collections::HashSet;
 
 /// Configuration for one nightshift PRD loop.
 pub struct WorkflowConfig<'a> {
@@ -39,7 +38,7 @@ pub struct WorkflowConfig<'a> {
 /// Tests provide fake implementations here so the loop can be exercised without
 /// shelling out to `gh`, `git`, or a coding-agent CLI.
 pub struct Runtime<'a> {
-    /// GitHub issue source and blocker-state checker.
+    /// GitHub issue source and PRD-body fetcher.
     pub github: &'a dyn GithubIssues,
     /// Git workspace hygiene implementation.
     pub git: &'a dyn GitOps,
@@ -50,7 +49,7 @@ pub struct Runtime<'a> {
 /// Runs the PRD child-issue loop until no eligible candidate remains.
 ///
 /// Each iteration enforces git hygiene, fetches open `ready-for-agent` issues,
-/// filters children that declare the requested PRD parent, then selects the
+/// filters direct children of the requested PRD, then selects the
 /// lowest-numbered unblocked child. Dry runs print the full simulated solve order,
 /// the agent command preview, and the first planned issue's prompt, then exit.
 /// Non-dry runs save a prompt copy, invoke the agent,
@@ -59,8 +58,8 @@ pub struct Runtime<'a> {
 /// # Errors
 ///
 /// Returns an error when GitHub or git adapters fail, the PRD issue cannot be
-/// found, no issues are available, the agent command fails, or the selected
-/// issue remains open after a successful agent exit.
+/// found, the agent command fails, or the selected issue remains open after a
+/// successful agent exit.
 ///
 /// # Examples
 ///
@@ -95,25 +94,10 @@ pub fn run(
     config: WorkflowConfig<'_>,
     runtime: Runtime<'_>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let initial_issues = runtime.github.fetch_issues(config.repo).map_err(|e| {
-        format!(
-            "nightshift: failed to fetch initial issues: {}. Exiting.",
-            e
-        )
-    })?;
-
-    if initial_issues.is_empty() {
-        return Err("nightshift: no issues found".into());
-    }
-
-    let prd: Option<String> = initial_issues
-        .iter()
-        .find(|i| i.number == config.prd)
-        .map(|i| i.body.clone());
-
-    let Some(prd_body) = prd else {
-        return Err(format!("nightshift: PRD issue {} not found", config.prd).into());
-    };
+    let prd_body = runtime
+        .github
+        .fetch_issue_body(config.repo, config.prd)
+        .map_err(|err| format!("nightshift: PRD issue {} not found: {}", config.prd, err))?;
 
     console::session_start(config.prd);
 
@@ -128,13 +112,13 @@ pub fn run(
             return Err(format!("nightshift: git hygiene check failed: {}. Exiting.", e).into());
         }
 
-        let issues = runtime
+        let issues_json = runtime
             .github
             .fetch_issues(config.repo)
             .map_err(|e| format!("nightshift: failed to fetch issues: {}. Exiting.", e))?;
 
         let (candidates, prd_has_open_issues) =
-            collect_prd_candidates(&issues, config.prd, config.issue);
+            collect_prd_candidates(&issues_json, config.prd, config.issue)?;
 
         if candidates.is_empty() {
             if prd_has_open_issues {
@@ -148,18 +132,16 @@ pub fn run(
             break;
         }
 
-        let next_issue_to_solve =
-            pick_next_unblocked_issue(&candidates, runtime.github, config.repo).map_err(|err| {
-                format!(
-                    "nightshift: API or connection error while checking blockers: {}",
-                    err
-                )
-            })?;
+        let next_issue_number = pick_next(&issues_json, config.prd, config.issue)?;
 
-        let Some(selected_issue) = next_issue_to_solve else {
+        let Some(next_issue_number) = next_issue_number else {
             console::loop_complete("All remaining issues are blocked");
             break;
         };
+
+        let selected_issue = issue(&issues_json, next_issue_number)?.ok_or_else(|| {
+            format!("nightshift: selected issue #{next_issue_number} missing from issue list")
+        })?;
 
         let issue_run = console::IssueRun::begin(selected_issue.number, &selected_issue.title);
 
@@ -192,14 +174,6 @@ pub fn run(
     Ok(())
 }
 
-/// Result of simulating which PRD child issues can be solved and in what order.
-pub(crate) struct SimulatedIssuePlan {
-    /// Issues that would be solved, in loop order.
-    pub planned: Vec<GithubIssue>,
-    /// Open candidates that simulation never reaches because blockers stay open.
-    pub blocked: Vec<GithubIssue>,
-}
-
 /// Runs a dry-run pass: planned order, agent command preview, and first-issue prompt.
 fn run_dry_run(
     config: WorkflowConfig<'_>,
@@ -212,13 +186,13 @@ fn run_dry_run(
         return Err(format!("nightshift: git hygiene check failed: {}. Exiting.", e).into());
     }
 
-    let issues = runtime
+    let issues_json = runtime
         .github
         .fetch_issues(config.repo)
         .map_err(|e| format!("nightshift: failed to fetch issues: {}. Exiting.", e))?;
 
     let (candidates, prd_has_open_issues) =
-        collect_prd_candidates(&issues, config.prd, config.issue);
+        collect_prd_candidates(&issues_json, config.prd, config.issue)?;
 
     if candidates.is_empty() {
         if prd_has_open_issues {
@@ -232,12 +206,7 @@ fn run_dry_run(
         return Ok(());
     }
 
-    let plan = simulate_issue_order(&candidates, runtime.github, config.repo).map_err(|err| {
-        format!(
-            "nightshift: API or connection error while checking blockers: {}",
-            err
-        )
-    })?;
+    let plan = plan_order(&issues_json, config.prd, config.issue)?;
 
     let (cmd_name, cmd_args) = config.agent.get_command_with_model(config.model)?;
     let agent_cmd = format!("{cmd_name} {}", cmd_args.join(" "));
@@ -261,126 +230,37 @@ fn run_dry_run(
     Ok(())
 }
 
-/// Collects open child issues for `prd` and reports whether any child exists
-/// below the configured issue floor.
-pub(crate) fn collect_prd_candidates(
-    issues: &[GithubIssue],
-    prd: u32,
-    min_issue: u32,
-) -> (Vec<GithubIssue>, bool) {
-    let mut candidates = Vec::new();
-    let mut prd_has_open_issues = false;
-    for issue in issues {
-        if let Some(parent) = extract_parent_prd(&issue.body)
-            && parent == prd
-        {
-            prd_has_open_issues = true;
-            if issue.number >= min_issue {
-                candidates.push(issue.clone());
-            }
-        }
-    }
-    (candidates, prd_has_open_issues)
-}
-
-/// Picks the lowest-numbered candidate whose declared blockers are all closed.
-pub(crate) fn pick_next_unblocked_issue(
-    candidates: &[GithubIssue],
-    github: &dyn GithubIssues,
-    repo: &str,
-) -> Result<Option<GithubIssue>, Box<dyn std::error::Error>> {
-    let mut sorted: Vec<_> = candidates.to_vec();
-    sorted.sort_by_key(|issue| issue.number);
-    for issue in sorted {
-        let blockers = extract_blockers(&issue.body);
-        if github.all_blockers_closed(repo, &blockers)? {
-            return Ok(Some(issue));
-        }
-    }
-    Ok(None)
-}
-
-fn issue_is_unblocked(
-    issue: &GithubIssue,
-    github: &dyn GithubIssues,
-    repo: &str,
-    simulated_closed: &HashSet<u32>,
-) -> Result<bool, Box<dyn std::error::Error>> {
-    let blockers = extract_blockers(&issue.body);
-    for &blocker in &blockers {
-        if simulated_closed.contains(&blocker) {
-            continue;
-        }
-        if !github.all_blockers_closed(repo, std::slice::from_ref(&blocker))? {
-            return Ok(false);
-        }
-    }
-    Ok(true)
-}
-
-/// Simulates the live loop's issue order: repeatedly pick the lowest unblocked
-/// candidate and treat it as solved until no candidate can advance.
-///
-/// Issues left in `blocked` have blockers that never clear during simulation
-/// (including circular dependencies among remaining candidates).
-pub(crate) fn simulate_issue_order(
-    candidates: &[GithubIssue],
-    github: &dyn GithubIssues,
-    repo: &str,
-) -> Result<SimulatedIssuePlan, Box<dyn std::error::Error>> {
-    let mut remaining: Vec<_> = candidates.to_vec();
-    remaining.sort_by_key(|issue| issue.number);
-    let mut planned = Vec::new();
-    let mut simulated_closed = HashSet::new();
-
-    loop {
-        let mut picked_idx = None;
-        for (idx, issue) in remaining.iter().enumerate() {
-            if issue_is_unblocked(issue, github, repo, &simulated_closed)? {
-                picked_idx = Some(idx);
-                break;
-            }
-        }
-
-        let Some(idx) = picked_idx else {
-            break;
-        };
-
-        let issue = remaining.remove(idx);
-        simulated_closed.insert(issue.number);
-        planned.push(issue);
-    }
-
-    Ok(SimulatedIssuePlan {
-        planned,
-        blocked: remaining,
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::agent::{Agent, AgentRunner};
     use crate::git::GitOps;
+    use crate::github::GithubIssues;
+    use serde_json::json;
     use std::cell::{Cell, RefCell};
-    use std::collections::HashSet;
+    use std::collections::{HashMap, HashSet};
 
-    fn child(number: u32, parent: u32, blockers: &[u32]) -> GithubIssue {
-        let blockers_line = if blockers.is_empty() {
-            String::new()
-        } else {
-            let refs: Vec<String> = blockers.iter().map(|n| format!("#{n}")).collect();
-            format!("\n## Blocked by\n{}", refs.join(", "))
-        };
-        GithubIssue {
-            number,
-            title: format!("Child {number}"),
-            body: format!("## Parent\n#{parent}{blockers_line}"),
-        }
+    fn child(number: u32, parent: u32, blockers: &[(u32, &str)]) -> serde_json::Value {
+        let nodes: Vec<serde_json::Value> = blockers
+            .iter()
+            .map(|(blocker, state)| json!({ "number": blocker, "state": state }))
+            .collect();
+        json!({
+            "number": number,
+            "title": format!("Child {number}"),
+            "body": format!("Task {number}"),
+            "parent": { "number": parent },
+            "blockedBy": { "nodes": nodes, "totalCount": nodes.len() }
+        })
+    }
+
+    fn graph(issues: &[serde_json::Value]) -> String {
+        serde_json::Value::Array(issues.to_vec()).to_string()
     }
 
     struct MockGithub {
-        issues: Vec<GithubIssue>,
+        issues_json: String,
+        bodies: HashMap<u32, String>,
         closed: HashSet<u32>,
     }
 
@@ -389,24 +269,29 @@ mod tests {
             Ok(repo.unwrap_or("foobar/repo").to_string())
         }
 
-        fn fetch_issues(
-            &self,
-            _repo: &str,
-        ) -> Result<Vec<GithubIssue>, Box<dyn std::error::Error>> {
-            Ok(self
-                .issues
-                .iter()
-                .filter(|issue| !self.closed.contains(&issue.number))
-                .cloned()
-                .collect())
+        fn fetch_issues(&self, _repo: &str) -> Result<String, Box<dyn std::error::Error>> {
+            let issues: Vec<serde_json::Value> = serde_json::from_str(&self.issues_json)?;
+            let open: Vec<serde_json::Value> = issues
+                .into_iter()
+                .filter(|issue| {
+                    issue
+                        .get("number")
+                        .and_then(|number| number.as_u64())
+                        .is_some_and(|number| !self.closed.contains(&(number as u32)))
+                })
+                .collect();
+            Ok(serde_json::Value::Array(open).to_string())
         }
 
-        fn all_blockers_closed(
+        fn fetch_issue_body(
             &self,
             _repo: &str,
-            blockers: &[u32],
-        ) -> Result<bool, Box<dyn std::error::Error>> {
-            Ok(blockers.iter().all(|blocker| self.closed.contains(blocker)))
+            issue_number: u32,
+        ) -> Result<String, Box<dyn std::error::Error>> {
+            self.bodies
+                .get(&issue_number)
+                .cloned()
+                .ok_or_else(|| format!("nightshift: failed to fetch issue #{issue_number}").into())
         }
 
         fn is_issue_closed(
@@ -454,118 +339,18 @@ mod tests {
         }
     }
 
-    #[test]
-    fn collect_prd_candidates_only_matching_parent_and_issue_floor() {
-        let issues = vec![
-            child(5, 42, &[]),
-            child(10, 42, &[]),
-            child(11, 99, &[]),
-            child(12, 42, &[]),
-        ];
-        let (candidates, has_open) = collect_prd_candidates(&issues, 42, 10);
-        assert!(has_open);
-        assert_eq!(candidates.len(), 2);
-        assert_eq!(candidates[0].number, 10);
-        assert_eq!(candidates[1].number, 12);
-    }
-
-    #[test]
-    fn pick_next_unblocked_issue_prefers_lowest_number() {
-        let issues = vec![child(20, 42, &[]), child(15, 42, &[])];
-        let github = MockGithub {
-            issues: vec![],
+    fn prd_github() -> MockGithub {
+        let issues = graph(&[child(10, 42, &[]), child(11, 42, &[])]);
+        MockGithub {
+            issues_json: issues,
+            bodies: HashMap::from([(42, "Product requirements".into())]),
             closed: HashSet::new(),
-        };
-        let picked = pick_next_unblocked_issue(&issues, &github, "foobar/repo")
-            .unwrap()
-            .unwrap();
-        assert_eq!(picked.number, 15);
-    }
-
-    #[test]
-    fn simulate_issue_order_respects_blocker_chain() {
-        let blocked = child(11, 42, &[10]);
-        let first = child(10, 42, &[]);
-        let github = MockGithub {
-            issues: vec![],
-            closed: HashSet::new(),
-        };
-        let plan = simulate_issue_order(&[blocked.clone(), first.clone()], &github, "foobar/repo")
-            .unwrap();
-        assert_eq!(
-            plan.planned.iter().map(|i| i.number).collect::<Vec<_>>(),
-            vec![10, 11]
-        );
-        assert!(plan.blocked.is_empty());
-    }
-
-    #[test]
-    fn simulate_issue_order_leaves_circular_dependencies_blocked() {
-        let a = child(10, 42, &[11]);
-        let b = child(11, 42, &[10]);
-        let github = MockGithub {
-            issues: vec![],
-            closed: HashSet::new(),
-        };
-        let plan = simulate_issue_order(&[a, b], &github, "foobar/repo").unwrap();
-        assert!(plan.planned.is_empty());
-        assert_eq!(plan.blocked.len(), 2);
-    }
-
-    #[test]
-    fn simulate_issue_order_omits_issues_with_permanent_external_blockers() {
-        let stuck = child(10, 42, &[99]);
-        let github = MockGithub {
-            issues: vec![],
-            closed: HashSet::new(),
-        };
-        let plan =
-            simulate_issue_order(std::slice::from_ref(&stuck), &github, "foobar/repo").unwrap();
-        assert!(plan.planned.is_empty());
-        assert_eq!(plan.blocked[0].number, 10);
-    }
-
-    #[test]
-    fn pick_next_unblocked_issue_skips_open_blockers() {
-        let blocked = child(10, 42, &[7]);
-        let ready = child(11, 42, &[]);
-        let github = MockGithub {
-            issues: vec![],
-            closed: HashSet::new(),
-        };
-        assert!(
-            pick_next_unblocked_issue(std::slice::from_ref(&blocked), &github, "foobar/repo")
-                .unwrap()
-                .is_none()
-        );
-        let picked =
-            pick_next_unblocked_issue(&[blocked.clone(), ready.clone()], &github, "foobar/repo")
-                .unwrap()
-                .unwrap();
-        assert_eq!(picked.number, 11);
-
-        let github = MockGithub {
-            issues: vec![],
-            closed: HashSet::from([7]),
-        };
-        let picked = pick_next_unblocked_issue(&[blocked, ready], &github, "foobar/repo")
-            .unwrap()
-            .unwrap();
-        assert_eq!(picked.number, 10);
+        }
     }
 
     #[test]
     fn dry_run_does_not_invoke_agent() {
-        let prd = GithubIssue {
-            number: 42,
-            title: "PRD".into(),
-            body: "Product requirements".into(),
-        };
-        let issues = vec![prd, child(10, 42, &[]), child(11, 42, &[])];
-        let github = MockGithub {
-            issues,
-            closed: HashSet::new(),
-        };
+        let github = prd_github();
         let agent = MockAgent {
             ran: Cell::new(false),
             received_model: RefCell::new(None),
@@ -592,14 +377,9 @@ mod tests {
 
     #[test]
     fn dry_run_accepts_explicit_model_without_invoking_agent() {
-        let prd = GithubIssue {
-            number: 42,
-            title: "PRD".into(),
-            body: "Product requirements".into(),
-        };
-        let issues = vec![prd, child(10, 42, &[])];
         let github = MockGithub {
-            issues,
+            issues_json: graph(&[child(10, 42, &[])]),
+            bodies: HashMap::from([(42, "Product requirements".into())]),
             closed: HashSet::new(),
         };
         let agent = MockAgent {
@@ -636,14 +416,9 @@ mod tests {
 
     #[test]
     fn non_dry_run_passes_explicit_model_to_agent_runner() {
-        let prd = GithubIssue {
-            number: 42,
-            title: "PRD".into(),
-            body: "Product requirements".into(),
-        };
-        let issues = vec![prd, child(10, 42, &[])];
         let github = MockGithub {
-            issues,
+            issues_json: graph(&[child(10, 42, &[])]),
+            bodies: HashMap::from([(42, "Product requirements".into())]),
             closed: HashSet::new(),
         };
         let agent = MockAgent {
@@ -670,5 +445,67 @@ mod tests {
         assert!(err.to_string().contains("mock agent stopped"));
         assert!(agent.ran.get());
         assert_eq!(agent.received_model.borrow().as_deref(), Some("gpt-5.2"));
+    }
+
+    #[test]
+    fn missing_prd_is_an_error() {
+        let github = MockGithub {
+            issues_json: graph(&[child(10, 42, &[])]),
+            bodies: HashMap::new(),
+            closed: HashSet::new(),
+        };
+        let agent = MockAgent {
+            ran: Cell::new(false),
+            received_model: RefCell::new(None),
+            error_on_run: false,
+        };
+        let config = WorkflowConfig {
+            prd: 42,
+            issue: 0,
+            repo: "foobar/repo",
+            base_branch: "main",
+            dry_run: true,
+            agent: Agent::Cursor,
+            model: None,
+            directives: "test directives",
+        };
+        let runtime = Runtime {
+            github: &github,
+            git: &MockGit,
+            agent_runner: &agent,
+        };
+        let err = run(config, runtime).unwrap_err();
+        assert!(err.to_string().contains("PRD issue 42 not found"));
+    }
+
+    #[test]
+    fn empty_children_stops_cleanly() {
+        let github = MockGithub {
+            issues_json: "[]".into(),
+            bodies: HashMap::from([(42, "Product requirements".into())]),
+            closed: HashSet::new(),
+        };
+        let agent = MockAgent {
+            ran: Cell::new(false),
+            received_model: RefCell::new(None),
+            error_on_run: false,
+        };
+        let config = WorkflowConfig {
+            prd: 42,
+            issue: 0,
+            repo: "foobar/repo",
+            base_branch: "main",
+            dry_run: true,
+            agent: Agent::Cursor,
+            model: None,
+            directives: "test directives",
+        };
+        let runtime = Runtime {
+            github: &github,
+            git: &MockGit,
+            agent_runner: &agent,
+        };
+        run(config, runtime).unwrap();
+        assert!(!agent.ran.get());
     }
 }

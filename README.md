@@ -7,13 +7,13 @@ Go to sleep with a backlog and wake up with merged PRs.
 nightshift autonomously works through your GitHub issues while you are afk. Point it at a PRD, pick your [favourite coding agent](#supported-agents), and it handles the rest: branch, implement, PR, merge, repeat. It stops when every child issue is done. Inspired by the [Ralph Wiggum](https://ghuntley.com/loop/) loop pattern.
 
 > [!WARNING]
-> **nightshift is designed exclusively for the [Matt Pocock skills](https://github.com/mattpocock/skills) workflow**; specifically the `to-prd` and `to-issues` skills. Your GitHub issues must be structured exactly as those skills produce them: child issues must declare a `## Parent` section referencing the PRD, a `## Blocked by` section listing dependencies, and carry the `ready-for-agent` label. Issues that do not match this structure will be silently skipped.
+> **nightshift selects work from native GitHub relationships, not issue-body text.** Child issues must be sub-issues of the PRD (`gh issue create --parent`), declare dependencies with `--blocked-by`, and carry the `ready-for-agent` label. Bodies are not parsed for membership or ordering.
 
 ## Prerequisites
 
 - **Rust + Cargo**: [install via rustup](https://rustup.rs)
 - **Git**
-- **GitHub CLI (`gh`)**: [install gh](https://cli.github.com), then run `gh auth login`. nightshift uses this to read your issues and find your repository.
+- **GitHub CLI (`gh`) >= 2.94.0**: [install gh](https://cli.github.com), then run `gh auth login`. nightshift uses this to read native issue relationships (`parent`, `blockedBy`) and find your repository.
 - **A coding agent**: install and sign in to whichever agent you pass to `--agent`. You only need one. See [Supported Agents](#supported-agents).
 
 ## Installation
@@ -65,7 +65,7 @@ To add support for a new agent, see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 nightshift works through your PRD one issue at a time, stopping when there is nothing left to pick up.
 
-Each iteration starts from a clean state: nightshift checks out and pulls your base branch, then fetches all open `ready-for-agent` issues from GitHub. It filters down to issues that belong to your PRD (via the `## Parent` section), then picks the lowest-numbered one whose blockers are all closed. If nothing is unblocked, it stops.
+Each iteration starts from a clean state: nightshift checks out and pulls your base branch, then fetches all open `ready-for-agent` issues from GitHub. It keeps issues whose native parent is your PRD, then picks the lowest-numbered one whose `blockedBy` issues are all closed. If nothing is unblocked, it stops.
 
 For the selected issue, nightshift constructs a unified prompt and pipes it to the coding agent via `stdin`. For details on prompt structures, default instructions, custom directives, and how nightshift manages isolated session context, see the [Context Management & Session Lifecycle Guide](docs/context-management.md).
 

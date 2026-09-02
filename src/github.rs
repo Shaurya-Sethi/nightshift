@@ -13,7 +13,7 @@ use std::process::Command;
 /// Open GitHub issue data needed by the prompt renderer.
 #[derive(Debug, Deserialize, Clone)]
 pub struct GithubIssue {
-    /// GitHub issue number, used for ordering, parent references, and prompts.
+    /// GitHub issue number shown in logs and included in the agent prompt.
     pub number: u32,
     /// GitHub issue title shown in logs and included in the agent prompt.
     pub title: String,
@@ -71,6 +71,10 @@ pub trait GithubIssues {
     /// [`crate::parser`].
     fn fetch_issues(&self, repo: &str) -> Result<String, Box<dyn std::error::Error>>;
     /// Returns the markdown body of a single issue, used for PRD context.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the issue cannot be read from GitHub.
     fn fetch_issue_body(
         &self,
         repo: &str,

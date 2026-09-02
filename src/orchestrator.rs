@@ -1,16 +1,15 @@
 //! Coordinates the PRD issue loop.
 //!
-//! The orchestrator fetches ready GitHub issues, uses [`crate::parser`] to keep
-//! only direct children of the requested PRD, skips children whose blockers are
-//! still open, and invokes the configured agent with a rendered prompt. It owns
-//! workflow policy such as candidate ordering, dry-run behavior, git hygiene,
-//! and the post-agent check that the selected issue was closed.
+//! Fetches ready GitHub issues, asks [`crate::parser`] which child to run, and
+//! invokes the configured agent with a rendered prompt. Also owns dry-run
+//! behavior, git hygiene, and the post-agent check that the selected issue was
+//! closed.
 
 use crate::agent::{Agent, AgentRunner};
 use crate::console;
 use crate::git::GitOps;
 use crate::github::GithubIssues;
-use crate::parser::{collect_prd_candidates, issue, pick_next, plan_order};
+use crate::parser::{collect_prd_candidates, pick_next, plan_order};
 use crate::prompt::{render_issue_prompt, save_prompt_copy};
 
 /// Configuration for one nightshift PRD loop.
@@ -117,31 +116,16 @@ pub fn run(
             .fetch_issues(config.repo)
             .map_err(|e| format!("nightshift: failed to fetch issues: {}. Exiting.", e))?;
 
-        let (candidates, prd_has_open_issues) =
-            collect_prd_candidates(&issues_json, config.prd, config.issue)?;
-
-        if candidates.is_empty() {
-            if prd_has_open_issues {
-                console::loop_complete(&format!(
-                    "No candidates from issue #{}; open issues remain below threshold",
-                    config.issue
-                ));
+        let Some(selected_issue) = pick_next(&issues_json, config.prd, config.issue)? else {
+            let (candidates, has_open_children) =
+                collect_prd_candidates(&issues_json, config.prd, config.issue)?;
+            if candidates.is_empty() {
+                complete_without_candidates(config.prd, config.issue, has_open_children);
             } else {
-                console::loop_complete(&format!("All issues for PRD #{} resolved", config.prd));
+                console::loop_complete("All remaining issues are blocked");
             }
             break;
-        }
-
-        let next_issue_number = pick_next(&issues_json, config.prd, config.issue)?;
-
-        let Some(next_issue_number) = next_issue_number else {
-            console::loop_complete("All remaining issues are blocked");
-            break;
         };
-
-        let selected_issue = issue(&issues_json, next_issue_number)?.ok_or_else(|| {
-            format!("nightshift: selected issue #{next_issue_number} missing from issue list")
-        })?;
 
         let issue_run = console::IssueRun::begin(selected_issue.number, &selected_issue.title);
 
@@ -191,22 +175,12 @@ fn run_dry_run(
         .fetch_issues(config.repo)
         .map_err(|e| format!("nightshift: failed to fetch issues: {}. Exiting.", e))?;
 
-    let (candidates, prd_has_open_issues) =
-        collect_prd_candidates(&issues_json, config.prd, config.issue)?;
+    let plan = plan_order(&issues_json, config.prd, config.issue)?;
 
-    if candidates.is_empty() {
-        if prd_has_open_issues {
-            console::loop_complete(&format!(
-                "No candidates from issue #{}; open issues remain below threshold",
-                config.issue
-            ));
-        } else {
-            console::loop_complete(&format!("All issues for PRD #{} resolved", config.prd));
-        }
+    if plan.planned.is_empty() && plan.blocked.is_empty() {
+        complete_without_candidates(config.prd, config.issue, plan.has_open_children);
         return Ok(());
     }
-
-    let plan = plan_order(&issues_json, config.prd, config.issue)?;
 
     let (cmd_name, cmd_args) = config.agent.get_command_with_model(config.model)?;
     let agent_cmd = format!("{cmd_name} {}", cmd_args.join(" "));
@@ -228,6 +202,17 @@ fn run_dry_run(
     }
 
     Ok(())
+}
+
+fn complete_without_candidates(prd: u32, min_issue: u32, has_open_children: bool) {
+    if has_open_children {
+        console::loop_complete(&format!(
+            "No candidates from issue #{}; open issues remain below threshold",
+            min_issue
+        ));
+    } else {
+        console::loop_complete(&format!("All issues for PRD #{prd} resolved"));
+    }
 }
 
 #[cfg(test)]

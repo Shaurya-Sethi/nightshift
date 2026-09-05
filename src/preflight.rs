@@ -89,7 +89,7 @@ fn read_line(io: &mut Io<'_>) -> std::io::Result<String> {
         ));
     }
     let line = line.trim().to_string();
-    if line.eq_ignore_ascii_case("q") || line == "\u{3}" {
+    if line.eq_ignore_ascii_case("q") {
         return Err(abort_error("Invocation Profile Preflight aborted"));
     }
     Ok(line)

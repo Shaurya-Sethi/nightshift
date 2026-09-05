@@ -179,29 +179,6 @@ fn process_runner_surfaces_exit_status_and_model_hint() {
             InvocationProfile {
                 agent: Agent::Claude,
                 model: Some("sonnet"),
-                reasoning_effort: None,
-            },
-            "prompt",
-        )
-        .expect_err("agent failure should bubble up")
-        .to_string();
-    assert!(err.contains("exited with status"));
-    assert!(err.contains("The agent may have rejected --model sonnet"));
-    assert!(!err.contains("cli said no"));
-}
-
-#[test]
-fn process_runner_surfaces_exit_status_and_profile_hints() {
-    let _lock = env_lock()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let (_env, _temp_dir) = install_fake_claude("stderr_fail", |_| {});
-
-    let err = ProcessAgentRunner
-        .run(
-            InvocationProfile {
-                agent: Agent::Claude,
-                model: Some("sonnet"),
                 reasoning_effort: Some("high"),
             },
             "prompt",

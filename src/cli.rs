@@ -248,7 +248,7 @@ mod tests {
     }
 
     #[test]
-    fn pick_flags_are_mutually_exclusive() {
+    fn pick_efforts_conflicts_with_pick_models() {
         let parsed = Args::try_parse_from([
             "nightshift",
             "--prd",

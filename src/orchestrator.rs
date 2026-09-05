@@ -26,7 +26,7 @@ pub struct WorkflowConfig<'a> {
     pub repo: &'a str,
     /// Base branch to check out and pull before each agent run.
     pub base_branch: &'a str,
-    /// When true, render and print the selected prompt without invoking an agent.
+    /// When true, print planned-order assignment lines and the first prompt without invoking an agent; requested preflight still runs.
     pub dry_run: bool,
     /// Whole-Run Invocation Defaults resolved for every issue without an override.
     pub whole_run_defaults: WholeRunInvocationDefaults<'a>,
@@ -424,7 +424,9 @@ mod tests {
     struct MockGithub {
         issues_json: String,
         bodies: HashMap<u32, String>,
-        closed: HashSet<u32>,
+        closed: RefCell<HashSet<u32>>,
+        fetch_body_calls: Cell<u32>,
+        fetch_issues_calls: Cell<u32>,
     }
 
     impl GithubIssues for MockGithub {
@@ -433,85 +435,8 @@ mod tests {
         }
 
         fn fetch_issues(&self, _repo: &str) -> Result<String, Box<dyn std::error::Error>> {
-            let issues: Vec<serde_json::Value> = serde_json::from_str(&self.issues_json)?;
-            let open: Vec<serde_json::Value> = issues
-                .into_iter()
-                .filter(|issue| {
-                    issue
-                        .get("number")
-                        .and_then(|number| number.as_u64())
-                        .is_some_and(|number| !self.closed.contains(&(number as u32)))
-                })
-                .collect();
-            Ok(serde_json::Value::Array(open).to_string())
-        }
-
-        fn fetch_issue_body(
-            &self,
-            _repo: &str,
-            issue_number: u32,
-        ) -> Result<String, Box<dyn std::error::Error>> {
-            self.bodies
-                .get(&issue_number)
-                .cloned()
-                .ok_or_else(|| format!("nightshift: failed to fetch issue #{issue_number}").into())
-        }
-
-        fn is_issue_closed(
-            &self,
-            _repo: &str,
-            issue_number: u32,
-        ) -> Result<bool, Box<dyn std::error::Error>> {
-            Ok(self.closed.contains(&issue_number))
-        }
-    }
-
-    struct CountingGithub {
-        fetch_body_calls: Cell<u32>,
-        fetch_issues_calls: Cell<u32>,
-    }
-
-    impl GithubIssues for CountingGithub {
-        fn resolve_repo(&self, repo: Option<&str>) -> Result<String, Box<dyn std::error::Error>> {
-            Ok(repo.unwrap_or("foobar/repo").to_string())
-        }
-
-        fn fetch_issues(&self, _repo: &str) -> Result<String, Box<dyn std::error::Error>> {
             self.fetch_issues_calls
                 .set(self.fetch_issues_calls.get() + 1);
-            Ok("[]".into())
-        }
-
-        fn fetch_issue_body(
-            &self,
-            _repo: &str,
-            _issue_number: u32,
-        ) -> Result<String, Box<dyn std::error::Error>> {
-            self.fetch_body_calls.set(self.fetch_body_calls.get() + 1);
-            Ok("Product requirements".into())
-        }
-
-        fn is_issue_closed(
-            &self,
-            _repo: &str,
-            _issue_number: u32,
-        ) -> Result<bool, Box<dyn std::error::Error>> {
-            Ok(false)
-        }
-    }
-
-    struct SharedGithub<'a> {
-        issues_json: String,
-        bodies: HashMap<u32, String>,
-        closed: &'a RefCell<HashSet<u32>>,
-    }
-
-    impl GithubIssues for SharedGithub<'_> {
-        fn resolve_repo(&self, repo: Option<&str>) -> Result<String, Box<dyn std::error::Error>> {
-            Ok(repo.unwrap_or("foobar/repo").to_string())
-        }
-
-        fn fetch_issues(&self, _repo: &str) -> Result<String, Box<dyn std::error::Error>> {
             let issues: Vec<serde_json::Value> = serde_json::from_str(&self.issues_json)?;
             let closed = self.closed.borrow();
             let open: Vec<serde_json::Value> = issues
@@ -531,6 +456,7 @@ mod tests {
             _repo: &str,
             issue_number: u32,
         ) -> Result<String, Box<dyn std::error::Error>> {
+            self.fetch_body_calls.set(self.fetch_body_calls.get() + 1);
             self.bodies
                 .get(&issue_number)
                 .cloned()
@@ -543,6 +469,52 @@ mod tests {
             issue_number: u32,
         ) -> Result<bool, Box<dyn std::error::Error>> {
             Ok(self.closed.borrow().contains(&issue_number))
+        }
+    }
+
+    fn mock_github(issues_json: impl Into<String>, bodies: HashMap<u32, String>) -> MockGithub {
+        MockGithub {
+            issues_json: issues_json.into(),
+            bodies,
+            closed: RefCell::new(HashSet::new()),
+            fetch_body_calls: Cell::new(0),
+            fetch_issues_calls: Cell::new(0),
+        }
+    }
+
+    struct RecordingCloser<'a> {
+        agents: RefCell<Vec<Agent>>,
+        models: RefCell<Vec<Option<String>>>,
+        prompts: RefCell<Vec<String>>,
+        closed: &'a RefCell<HashSet<u32>>,
+        next_close: Cell<u32>,
+    }
+
+    impl AgentRunner for RecordingCloser<'_> {
+        fn run(
+            &self,
+            profile: InvocationProfile<'_>,
+            prompt: &str,
+        ) -> Result<(), Box<dyn std::error::Error>> {
+            self.agents.borrow_mut().push(profile.agent);
+            self.models
+                .borrow_mut()
+                .push(profile.model.map(str::to_string));
+            self.prompts.borrow_mut().push(prompt.to_string());
+            let number = self.next_close.get();
+            self.closed.borrow_mut().insert(number);
+            self.next_close.set(number + 1);
+            Ok(())
+        }
+    }
+
+    fn recording_closer(closed: &RefCell<HashSet<u32>>) -> RecordingCloser<'_> {
+        RecordingCloser {
+            agents: RefCell::new(Vec::new()),
+            models: RefCell::new(Vec::new()),
+            prompts: RefCell::new(Vec::new()),
+            closed,
+            next_close: Cell::new(10),
         }
     }
 
@@ -586,12 +558,10 @@ mod tests {
     }
 
     fn prd_github() -> MockGithub {
-        let issues = graph(&[child(10, 42, &[]), child(11, 42, &[])]);
-        MockGithub {
-            issues_json: issues,
-            bodies: HashMap::from([(42, "Product requirements".into())]),
-            closed: HashSet::new(),
-        }
+        mock_github(
+            graph(&[child(10, 42, &[]), child(11, 42, &[])]),
+            HashMap::from([(42, "Product requirements".into())]),
+        )
     }
 
     fn idle_agent() -> MockAgent {
@@ -629,11 +599,10 @@ mod tests {
 
     #[test]
     fn dry_run_accepts_explicit_model_without_invoking_agent() {
-        let github = MockGithub {
-            issues_json: graph(&[child(10, 42, &[])]),
-            bodies: HashMap::from([(42, "Product requirements".into())]),
-            closed: HashSet::new(),
-        };
+        let github = mock_github(
+            graph(&[child(10, 42, &[])]),
+            HashMap::from([(42, "Product requirements".into())]),
+        );
         let agent = idle_agent();
         let config = workflow(
             1,
@@ -662,7 +631,7 @@ mod tests {
             (
                 10,
                 PerIssueInvocationOverride {
-                    agent: None,
+                    agent: Some(Agent::Codex),
                     model: Some("issue-one-model".to_string()),
                     reasoning_effort: Some("high".to_string()),
                 },
@@ -686,41 +655,25 @@ mod tests {
 
         assert_eq!(assignments.len(), 2);
         assert_eq!(assignments[0].0, 10);
+        assert_eq!(assignments[0].2.agent, Agent::Codex);
         assert_eq!(assignments[0].2.model, Some("issue-one-model"));
         assert_eq!(assignments[0].2.reasoning_effort, Some("high"));
         assert_eq!(assignments[1].0, 11);
+        assert_eq!(assignments[1].2.agent, Agent::Pi);
         assert_eq!(assignments[1].2.model, Some("issue-two-model"));
         assert_eq!(assignments[1].2.reasoning_effort, Some("low"));
-        assert_eq!(command, "pi -p --model issue-one-model --thinking high");
-    }
-
-    #[test]
-    fn dry_run_preview_uses_first_resolved_agent_command() {
-        let planned = [github_child(10)];
-        let profiles = RunEphemeralProfileMap::from([(
-            10,
-            PerIssueInvocationOverride {
-                agent: Some(Agent::Codex),
-                model: None,
-                reasoning_effort: None,
-            },
-        )]);
-
-        let (assignments, command) =
-            build_dry_run_preview(&planned, defaults(Agent::Pi, None, None), &profiles)
-                .expect("preview should use selected agent");
-
-        assert_eq!(assignments[0].2.agent, Agent::Codex);
-        assert_eq!(command, "codex exec - --ephemeral");
+        assert_eq!(
+            command,
+            "codex exec --model issue-one-model -c model_reasoning_effort=high - --ephemeral"
+        );
     }
 
     #[test]
     fn non_dry_run_passes_explicit_model_to_agent_runner() {
-        let github = MockGithub {
-            issues_json: graph(&[child(10, 42, &[])]),
-            bodies: HashMap::from([(42, "Product requirements".into())]),
-            closed: HashSet::new(),
-        };
+        let github = mock_github(
+            graph(&[child(10, 42, &[])]),
+            HashMap::from([(42, "Product requirements".into())]),
+        );
         let agent = MockAgent {
             ran: Cell::new(false),
             received_model: RefCell::new(None),
@@ -743,11 +696,10 @@ mod tests {
 
     #[test]
     fn non_dry_run_resolves_per_issue_profile_before_agent_invocation() {
-        let github = MockGithub {
-            issues_json: graph(&[child(10, 42, &[])]),
-            bodies: HashMap::from([(42, "Product requirements".into())]),
-            closed: HashSet::new(),
-        };
+        let github = mock_github(
+            graph(&[child(10, 42, &[])]),
+            HashMap::from([(42, "Product requirements".into())]),
+        );
         let agent = MockAgent {
             ran: Cell::new(false),
             received_model: RefCell::new(None),
@@ -784,11 +736,10 @@ mod tests {
 
     #[test]
     fn non_dry_run_uses_defaults_for_unmapped_issue_profile() {
-        let github = MockGithub {
-            issues_json: graph(&[child(10, 42, &[])]),
-            bodies: HashMap::from([(42, "Product requirements".into())]),
-            closed: HashSet::new(),
-        };
+        let github = mock_github(
+            graph(&[child(10, 42, &[])]),
+            HashMap::from([(42, "Product requirements".into())]),
+        );
         let agent = MockAgent {
             ran: Cell::new(false),
             received_model: RefCell::new(None),
@@ -822,39 +773,11 @@ mod tests {
 
     #[test]
     fn live_loop_resolves_a_second_issue_to_a_different_model() {
-        struct RecordingCloser<'a> {
-            models: RefCell<Vec<Option<String>>>,
-            closed: &'a RefCell<HashSet<u32>>,
-            next_close: Cell<u32>,
-        }
-
-        impl AgentRunner for RecordingCloser<'_> {
-            fn run(
-                &self,
-                profile: InvocationProfile<'_>,
-                _prompt: &str,
-            ) -> Result<(), Box<dyn std::error::Error>> {
-                self.models
-                    .borrow_mut()
-                    .push(profile.model.map(str::to_string));
-                let number = self.next_close.get();
-                self.closed.borrow_mut().insert(number);
-                self.next_close.set(number + 1);
-                Ok(())
-            }
-        }
-
-        let closed = RefCell::new(HashSet::new());
-        let github = SharedGithub {
-            issues_json: graph(&[child(10, 42, &[]), child(11, 42, &[])]),
-            bodies: HashMap::from([(42, "Product requirements".into())]),
-            closed: &closed,
-        };
-        let agent = RecordingCloser {
-            models: RefCell::new(Vec::new()),
-            closed: &closed,
-            next_close: Cell::new(10),
-        };
+        let github = mock_github(
+            graph(&[child(10, 42, &[]), child(11, 42, &[])]),
+            HashMap::from([(42, "Product requirements".into())]),
+        );
+        let agent = recording_closer(&github.closed);
         let profiles = RunEphemeralProfileMap::from([
             (
                 10,
@@ -894,11 +817,7 @@ mod tests {
 
     #[test]
     fn missing_prd_is_an_error() {
-        let github = MockGithub {
-            issues_json: graph(&[child(10, 42, &[])]),
-            bodies: HashMap::new(),
-            closed: HashSet::new(),
-        };
+        let github = mock_github(graph(&[child(10, 42, &[])]), HashMap::new());
         let agent = idle_agent();
         let config = workflow(
             0,
@@ -914,11 +833,7 @@ mod tests {
 
     #[test]
     fn empty_children_stops_cleanly() {
-        let github = MockGithub {
-            issues_json: "[]".into(),
-            bodies: HashMap::from([(42, "Product requirements".into())]),
-            closed: HashSet::new(),
-        };
+        let github = mock_github("[]", HashMap::from([(42, "Product requirements".into())]));
         let agent = idle_agent();
         let config = workflow(
             0,
@@ -932,7 +847,7 @@ mod tests {
         assert!(!agent.ran.get());
     }
 
-    fn assert_no_github_calls(github: &CountingGithub) {
+    fn assert_no_github_calls(github: &MockGithub) {
         assert_eq!(github.fetch_body_calls.get(), 0);
         assert_eq!(github.fetch_issues_calls.get(), 0);
     }
@@ -960,10 +875,7 @@ mod tests {
             ),
         ];
         for (agent, model, effort, needle) in cases {
-            let github = CountingGithub {
-                fetch_body_calls: Cell::new(0),
-                fetch_issues_calls: Cell::new(0),
-            };
+            let github = mock_github("[]", HashMap::new());
             let runner = idle_agent();
             let config = workflow(
                 0,
@@ -985,10 +897,7 @@ mod tests {
     #[test]
     fn pick_efforts_without_pick_agents_fails_before_any_github_call() {
         for agent in [Agent::Cursor, Agent::Antigravity] {
-            let github = CountingGithub {
-                fetch_body_calls: Cell::new(0),
-                fetch_issues_calls: Cell::new(0),
-            };
+            let github = mock_github("[]", HashMap::new());
             let runner = idle_agent();
             let config = workflow(
                 1,
@@ -1013,10 +922,7 @@ mod tests {
 
     #[test]
     fn pick_models_on_antigravity_fails_before_any_github_call() {
-        let github = CountingGithub {
-            fetch_body_calls: Cell::new(0),
-            fetch_issues_calls: Cell::new(0),
-        };
+        let github = mock_github("[]", HashMap::new());
         let runner = idle_agent();
         let config = workflow(
             1,
@@ -1041,10 +947,7 @@ mod tests {
 
     #[test]
     fn non_tty_pick_flags_fail_before_any_github_call() {
-        let github = CountingGithub {
-            fetch_body_calls: Cell::new(0),
-            fetch_issues_calls: Cell::new(0),
-        };
+        let github = mock_github("[]", HashMap::new());
         let runner = idle_agent();
         let mut input = Cursor::new(b"".as_slice());
         let mut output = Vec::new();
@@ -1072,40 +975,11 @@ mod tests {
 
     #[test]
     fn agent_preflight_to_pi_uses_github_built_in_directives() {
-        struct RecordingCloser<'a> {
-            agents: RefCell<Vec<Agent>>,
-            prompts: RefCell<Vec<String>>,
-            closed: &'a RefCell<HashSet<u32>>,
-            next_close: Cell<u32>,
-        }
-
-        impl AgentRunner for RecordingCloser<'_> {
-            fn run(
-                &self,
-                profile: InvocationProfile<'_>,
-                prompt: &str,
-            ) -> Result<(), Box<dyn std::error::Error>> {
-                self.agents.borrow_mut().push(profile.agent);
-                self.prompts.borrow_mut().push(prompt.to_string());
-                let number = self.next_close.get();
-                self.closed.borrow_mut().insert(number);
-                self.next_close.set(number + 1);
-                Ok(())
-            }
-        }
-
-        let closed = RefCell::new(HashSet::new());
-        let github = SharedGithub {
-            issues_json: graph(&[child(10, 42, &[]), child(11, 42, &[])]),
-            bodies: HashMap::from([(42, "Product requirements".into())]),
-            closed: &closed,
-        };
-        let agent = RecordingCloser {
-            agents: RefCell::new(Vec::new()),
-            prompts: RefCell::new(Vec::new()),
-            closed: &closed,
-            next_close: Cell::new(10),
-        };
+        let github = mock_github(
+            graph(&[child(10, 42, &[]), child(11, 42, &[])]),
+            HashMap::from([(42, "Product requirements".into())]),
+        );
+        let agent = recording_closer(&github.closed);
         let mut input = Cursor::new(b"5\n\n\n".as_slice());
         let mut output = Vec::new();
         let mut preflight_io = crate::preflight::Io::new(true, &mut input, &mut output);
@@ -1138,11 +1012,10 @@ mod tests {
 
     #[test]
     fn effort_preflight_excludes_forever_blocked_issues_from_scripted_input() {
-        let github = MockGithub {
-            issues_json: graph(&[child(10, 42, &[]), child(11, 42, &[(99, "OPEN")])]),
-            bodies: HashMap::from([(42, "Product requirements".into())]),
-            closed: HashSet::new(),
-        };
+        let github = mock_github(
+            graph(&[child(10, 42, &[]), child(11, 42, &[(99, "OPEN")])]),
+            HashMap::from([(42, "Product requirements".into())]),
+        );
         let agent = MockAgent {
             ran: Cell::new(false),
             received_model: RefCell::new(None),
@@ -1179,11 +1052,10 @@ mod tests {
 
     #[test]
     fn pick_models_dry_run_never_invokes_agent() {
-        let github = MockGithub {
-            issues_json: graph(&[child(10, 42, &[])]),
-            bodies: HashMap::from([(42, "Product requirements".into())]),
-            closed: HashSet::new(),
-        };
+        let github = mock_github(
+            graph(&[child(10, 42, &[])]),
+            HashMap::from([(42, "Product requirements".into())]),
+        );
         let agent = idle_agent();
         let mut input = Cursor::new(b"issue-model\n5\n\n".as_slice());
         let mut output = Vec::new();
@@ -1211,11 +1083,10 @@ mod tests {
 
     #[test]
     fn effort_preflight_abort_prevents_agent_invocation() {
-        let github = MockGithub {
-            issues_json: graph(&[child(10, 42, &[])]),
-            bodies: HashMap::from([(42, "Product requirements".into())]),
-            closed: HashSet::new(),
-        };
+        let github = mock_github(
+            graph(&[child(10, 42, &[])]),
+            HashMap::from([(42, "Product requirements".into())]),
+        );
         let agent = idle_agent();
         let mut input = Cursor::new(b"q\n".as_slice());
         let mut output = Vec::new();

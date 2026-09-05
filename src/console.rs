@@ -139,7 +139,7 @@ impl IssueRun {
         let _ = writeln!(out, "{}", dim(line));
     }
 
-    /// Prints model and reasoning effort resolved for this agent invocation.
+    /// Prints the resolved agent, model, and reasoning effort for this invocation.
     pub fn invocation_profile(&self, profile: InvocationProfile<'_>) {
         self.meta(&invocation_profile_line(profile));
     }

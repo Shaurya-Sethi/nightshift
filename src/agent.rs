@@ -281,12 +281,7 @@ impl AgentRunner for ProcessAgentRunner {
         model: Option<&str>,
         prompt: &str,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let profile = InvocationProfile {
-            agent,
-            model,
-            reasoning_effort: None,
-        };
-        let (cmd_name, cmd_args) = agent.get_command_with_profile(profile)?;
+        let (cmd_name, cmd_args) = agent.get_command_with_model(model)?;
 
         let mut child = Command::new(cmd_name)
             .args(&cmd_args)

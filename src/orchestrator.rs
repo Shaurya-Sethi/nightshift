@@ -9,7 +9,7 @@ use crate::agent::{Agent, AgentRunner};
 use crate::console;
 use crate::git::GitOps;
 use crate::github::GithubIssues;
-use crate::parser::{collect_prd_candidates, pick_next, plan_order};
+use crate::parser::plan_order;
 use crate::prompt::{render_issue_prompt, save_prompt_copy};
 
 /// Configuration for one nightshift PRD loop.
@@ -116,11 +116,10 @@ pub fn run(
             .fetch_issues(config.repo)
             .map_err(|e| format!("nightshift: failed to fetch issues: {}. Exiting.", e))?;
 
-        let Some(selected_issue) = pick_next(&issues_json, config.prd, config.issue)? else {
-            let (candidates, has_open_children) =
-                collect_prd_candidates(&issues_json, config.prd, config.issue)?;
-            if candidates.is_empty() {
-                complete_without_candidates(config.prd, config.issue, has_open_children);
+        let plan = plan_order(&issues_json, config.prd, config.issue)?;
+        let Some(selected_issue) = plan.planned.into_iter().next() else {
+            if plan.blocked.is_empty() {
+                complete_without_candidates(config.prd, config.issue, plan.has_open_children);
             } else {
                 console::loop_complete("All remaining issues are blocked");
             }

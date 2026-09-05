@@ -91,68 +91,6 @@ fn prd_slice(issues: &[ListedIssue], prd: u32, min_issue: u32) -> (Vec<&ListedIs
     (candidates, has_open_children)
 }
 
-/// Collects open child issues for `prd` and reports whether any child exists.
-///
-/// Candidates are direct children (`parent.number == prd`) whose number is at
-/// least `min_issue`. The boolean is true when any direct child exists, including
-/// those below the floor.
-///
-/// # Errors
-///
-/// Returns an error when `json` is not a GitHub issue-list array.
-///
-/// # Examples
-///
-/// ```rust
-/// let json = r#"[{"number":10,"title":"A","body":"x","parent":{"number":42},"blockedBy":{"nodes":[]}}]"#;
-/// let (candidates, has_open) = nightshift::parser::collect_prd_candidates(json, 42, 10).unwrap();
-/// assert!(has_open);
-/// assert_eq!(candidates[0].number, 10);
-/// ```
-pub fn collect_prd_candidates(
-    json: &str,
-    prd: u32,
-    min_issue: u32,
-) -> Result<(Vec<GithubIssue>, bool), Box<dyn Error>> {
-    let issues = parse_issues(json)?;
-    let (candidates, has_open_children) = prd_slice(&issues, prd, min_issue);
-    Ok((
-        candidates
-            .iter()
-            .map(|issue| to_github_issue(issue))
-            .collect(),
-        has_open_children,
-    ))
-}
-
-/// Returns the lowest-numbered ready child of `prd` at or above `min_issue`.
-///
-/// Ready means every `blockedBy` node is closed. Blockers outside the PRD set
-/// still count. Returns [`None`] when no child is ready.
-///
-/// # Errors
-///
-/// Returns an error when `json` is not a GitHub issue-list array.
-///
-/// # Examples
-///
-/// ```rust
-/// let json = r#"[{"number":11,"title":"B","parent":{"number":42},"blockedBy":{"nodes":[]}},{"number":10,"title":"A","parent":{"number":42},"blockedBy":{"nodes":[]}}]"#;
-/// let picked = nightshift::parser::pick_next(json, 42, 0).unwrap().unwrap();
-/// assert_eq!(picked.number, 10);
-/// ```
-pub fn pick_next(
-    json: &str,
-    prd: u32,
-    min_issue: u32,
-) -> Result<Option<GithubIssue>, Box<dyn Error>> {
-    let issues = parse_issues(json)?;
-    let (mut candidates, _) = prd_slice(&issues, prd, min_issue);
-    candidates.retain(|issue| is_ready(issue, &HashSet::new()));
-    candidates.sort_by_key(|issue| issue.number);
-    Ok(candidates.first().map(|issue| to_github_issue(issue)))
-}
-
 /// Simulates the live loop: repeatedly pick the lowest ready child until none remain.
 ///
 /// Issues left in [`IssuePlan::blocked`] have blockers that never close during
@@ -210,9 +148,12 @@ mod tests {
         serde_json::Value::Array(issues.to_vec()).to_string()
     }
 
-    fn picked_number(json: &str, prd: u32, min_issue: u32) -> Option<u32> {
-        pick_next(json, prd, min_issue)
+    fn first_planned(json: &str, prd: u32, min_issue: u32) -> Option<u32> {
+        plan_order(json, prd, min_issue)
             .unwrap()
+            .planned
+            .into_iter()
+            .next()
             .map(|issue| issue.number)
     }
 
@@ -246,9 +187,9 @@ mod tests {
     #[test]
     fn blocker_closed_issue_is_selectable() {
         let json = graph(&[child(10, Some(42), &[(7, "CLOSED")], "Do the work.")]);
-        let picked = pick_next(&json, 42, 0).unwrap().unwrap();
-        assert_eq!(picked.number, 10);
-        assert_eq!(picked.body, "Do the work.");
+        let plan = plan_order(&json, 42, 0).unwrap();
+        assert_eq!(plan.planned[0].number, 10);
+        assert_eq!(plan.planned[0].body, "Do the work.");
         assert!(!json.contains("## Parent"));
         assert!(!json.contains("## Blocked by"));
     }
@@ -256,7 +197,7 @@ mod tests {
     #[test]
     fn blocker_open_issue_is_not_selectable() {
         let json = graph(&[child(10, Some(42), &[(7, "OPEN")], "Do the work.")]);
-        assert_eq!(picked_number(&json, 42, 0), None);
+        assert_eq!(first_planned(&json, 42, 0), None);
     }
 
     #[test]
@@ -265,7 +206,7 @@ mod tests {
             child(20, Some(42), &[], "Later."),
             child(15, Some(42), &[], "Earlier."),
         ]);
-        assert_eq!(picked_number(&json, 42, 0), Some(15));
+        assert_eq!(first_planned(&json, 42, 0), Some(15));
     }
 
     #[test]
@@ -276,7 +217,6 @@ mod tests {
             &[(99, "OPEN")],
             "Depends on outside work.",
         )]);
-        assert_eq!(picked_number(&json, 42, 0), None);
         let plan = plan_order(&json, 42, 0).unwrap();
         assert!(plan.planned.is_empty());
         assert_eq!(plan.blocked[0].number, 10);
@@ -290,7 +230,7 @@ mod tests {
             &[(99, "CLOSED")],
             "Outside work is done.",
         )]);
-        assert_eq!(picked_number(&json, 42, 0), Some(10));
+        assert_eq!(first_planned(&json, 42, 0), Some(10));
     }
 
     #[test]
@@ -299,7 +239,6 @@ mod tests {
             child(10, Some(42), &[(11, "OPEN")], "A"),
             child(11, Some(42), &[(10, "OPEN")], "B"),
         ]);
-        assert_eq!(picked_number(&json, 42, 0), None);
         let plan = plan_order(&json, 42, 0).unwrap();
         assert!(plan.planned.is_empty());
         assert_eq!(plan.blocked.len(), 2);
@@ -308,20 +247,18 @@ mod tests {
     #[test]
     fn prd_with_no_children_returns_empty_plan() {
         let json = graph(&[child(10, Some(99), &[], "Other PRD.")]);
-        let (candidates, has_open) = collect_prd_candidates(&json, 42, 0).unwrap();
-        assert!(!has_open);
-        assert!(candidates.is_empty());
         let plan = plan_order(&json, 42, 0).unwrap();
+        assert!(!plan.has_open_children);
         assert!(plan.planned.is_empty());
         assert!(plan.blocked.is_empty());
-        assert_eq!(picked_number(&json, 42, 0), None);
     }
 
     #[test]
     fn empty_list_is_no_children() {
-        let (candidates, has_open) = collect_prd_candidates("[]", 42, 0).unwrap();
-        assert!(!has_open);
-        assert!(candidates.is_empty());
+        let plan = plan_order("[]", 42, 0).unwrap();
+        assert!(!plan.has_open_children);
+        assert!(plan.planned.is_empty());
+        assert!(plan.blocked.is_empty());
     }
 
     #[test]
@@ -332,10 +269,10 @@ mod tests {
             child(11, Some(99), &[], "Other PRD."),
             child(12, Some(42), &[], "Above floor."),
         ]);
-        let (candidates, has_open) = collect_prd_candidates(&json, 42, 10).unwrap();
-        assert!(has_open);
+        let plan = plan_order(&json, 42, 10).unwrap();
+        assert!(plan.has_open_children);
         assert_eq!(
-            candidates
+            plan.planned
                 .iter()
                 .map(|issue| issue.number)
                 .collect::<Vec<_>>(),
@@ -363,9 +300,10 @@ mod tests {
     #[test]
     fn grandchild_is_not_a_member() {
         let json = graph(&[child(10, Some(7), &[], "Parent is a child, not the PRD.")]);
-        let (candidates, has_open) = collect_prd_candidates(&json, 42, 0).unwrap();
-        assert!(!has_open);
-        assert!(candidates.is_empty());
+        let plan = plan_order(&json, 42, 0).unwrap();
+        assert!(!plan.has_open_children);
+        assert!(plan.planned.is_empty());
+        assert!(plan.blocked.is_empty());
     }
 
     #[test]
@@ -376,24 +314,26 @@ mod tests {
             &[],
             "## Parent\n#99\n\n## Blocked by\n#7\n",
         )]);
-        assert_eq!(picked_number(&claiming_other_prd, 42, 0), Some(10));
-        assert_eq!(picked_number(&claiming_other_prd, 99, 0), None);
+        assert_eq!(first_planned(&claiming_other_prd, 42, 0), Some(10));
+        assert_eq!(first_planned(&claiming_other_prd, 99, 0), None);
 
         let body_only_member = graph(&[child(11, None, &[], "## Parent\n#42\n")]);
-        let (candidates, has_open) = collect_prd_candidates(&body_only_member, 42, 0).unwrap();
-        assert!(!has_open);
-        assert!(candidates.is_empty());
+        let plan = plan_order(&body_only_member, 42, 0).unwrap();
+        assert!(!plan.has_open_children);
+        assert!(plan.planned.is_empty());
     }
 
     #[test]
     fn malformed_json_is_an_error() {
-        let err = pick_next("not-json", 42, 0).unwrap_err();
+        let err = plan_order("not-json", 42, 0)
+            .err()
+            .expect("malformed json should fail");
         assert!(err.to_string().contains("failed to parse issue list"));
     }
 
     #[test]
     fn closed_state_is_case_insensitive() {
         let json = graph(&[child(10, Some(42), &[(7, "closed")], "Done blocker.")]);
-        assert_eq!(picked_number(&json, 42, 0), Some(10));
+        assert_eq!(first_planned(&json, 42, 0), Some(10));
     }
 }

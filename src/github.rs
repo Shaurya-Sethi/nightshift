@@ -11,7 +11,7 @@ use serde_json::from_slice;
 use std::process::Command;
 
 /// Open GitHub issue data needed by the prompt renderer.
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug)]
 pub struct GithubIssue {
     /// GitHub issue number shown in logs and included in the agent prompt.
     pub number: u32,

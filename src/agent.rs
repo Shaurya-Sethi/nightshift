@@ -26,6 +26,11 @@ pub enum Agent {
     ///
     /// Pi has no sub-agent support; built-in directives omit that step.
     Pi,
+    /// OpenCode CLI, invoked as `opencode run --auto`.
+    #[value(name = "opencode")]
+    OpenCode,
+    /// GitHub Copilot CLI, invoked as `copilot`.
+    Copilot,
 }
 
 impl Agent {
@@ -40,6 +45,8 @@ impl Agent {
             Self::Antigravity,
             Self::Cursor,
             Self::Pi,
+            Self::OpenCode,
+            Self::Copilot,
         ]
     }
 
@@ -71,18 +78,28 @@ impl Agent {
             Self::Codex => ("codex", vec!["exec", "-", "--ephemeral"]),
             // antigravity-cli is invoked as `agy`
             Self::Antigravity => ("agy", vec!["-p", "--dangerously-skip-permissions"]),
+            // opencode run is non-interactive; --auto auto-approves permissions
+            Self::OpenCode => ("opencode", vec!["run", "--auto"]),
+            // --allow-all skips permission prompts; --no-ask-user blocks clarifying questions;
+            // prompt is read from stdin (no -p / positional prompt arg)
+            Self::Copilot => ("copilot", vec!["--allow-all", "--no-ask-user"]),
         }
     }
 
     /// Returns this agent's documented static reasoning-effort values, if known.
     ///
     /// The values are capability-level validation only. Agents remain
-    /// responsible for model-specific effort restrictions.
+    /// responsible for model-specific effort restrictions. OpenCode also
+    /// permits model-specific and custom variants outside its documented list.
     pub fn supported_reasoning_efforts(self) -> Option<&'static [&'static str]> {
         match self {
             Self::Pi => Some(&["off", "minimal", "low", "medium", "high", "xhigh", "max"]),
+            Self::Copilot => Some(&["none", "minimal", "low", "medium", "high", "xhigh", "max"]),
             Self::Claude => Some(&["low", "medium", "high", "max"]),
             Self::Codex => Some(&["minimal", "low", "medium", "high", "xhigh"]),
+            // picker legend; local `opencode run --help` also examples max/minimal.
+            // whole-run --variant values still pass through unchanged.
+            Self::OpenCode => Some(&["low", "medium", "high", "xhigh", "minimal", "max"]),
             Self::Antigravity | Self::Cursor => None,
         }
     }
@@ -90,12 +107,15 @@ impl Agent {
     /// Returns the CLI program and flags for a resolved invocation profile.
     ///
     /// Model strings are passed through without catalog validation. Reasoning
-    /// effort is validated only against the selected agent's native enum.
+    /// effort is validated only against the selected agent's native enum, except
+    /// OpenCode variants, which that CLI validates per model.
     ///
     /// # Errors
     ///
     /// Returns an error when a requested model or reasoning effort is not
     /// supported by this agent, or when effort is outside its native enum.
+    /// OpenCode is the exception: any `--variant` string is passed through for
+    /// that CLI to validate.
     pub fn get_command_with_profile(
         self,
         profile: InvocationProfile<'_>,
@@ -168,6 +188,11 @@ impl Agent {
     }
 
     fn validate_reasoning_effort(self, effort: &str) -> Result<(), String> {
+        // OpenCode variants are provider/model-specific and may be custom.
+        if self == Self::OpenCode {
+            return Ok(());
+        }
+
         let Some(supported) = self.supported_reasoning_efforts() else {
             let hint = match self {
                 Self::Cursor => "; choose a --model slug that encodes the desired effort",
@@ -192,8 +217,10 @@ impl Agent {
     fn append_reasoning_effort_args(self, args: &mut Vec<String>, effort: &str) {
         match self {
             Self::Pi => args.extend(["--thinking".into(), effort.into()]),
+            Self::Copilot => args.extend(["--reasoning-effort".into(), effort.into()]),
             Self::Claude => args.extend(["--effort".into(), effort.into()]),
             Self::Codex => args.extend(["-c".into(), format!("model_reasoning_effort={effort}")]),
+            Self::OpenCode => args.extend(["--variant".into(), effort.into()]),
             Self::Antigravity | Self::Cursor => {
                 unreachable!("unsupported effort is rejected before argv construction")
             }
@@ -208,6 +235,8 @@ impl Agent {
             Self::Antigravity => "antigravity",
             Self::Cursor => "cursor",
             Self::Pi => "pi",
+            Self::OpenCode => "opencode",
+            Self::Copilot => "copilot",
         }
     }
 }
@@ -366,6 +395,22 @@ mod tests {
             )
         );
         assert_eq!(
+            Agent::Copilot
+                .get_command_with_profile(profile)
+                .expect("copilot supports high effort"),
+            (
+                "copilot",
+                vec![
+                    "--allow-all".into(),
+                    "--no-ask-user".into(),
+                    "--model".into(),
+                    "configured-model".into(),
+                    "--reasoning-effort".into(),
+                    "high".into(),
+                ],
+            )
+        );
+        assert_eq!(
             Agent::Claude
                 .get_command_with_profile(profile)
                 .expect("claude supports high effort"),
@@ -398,6 +443,22 @@ mod tests {
                 ],
             )
         );
+        assert_eq!(
+            Agent::OpenCode
+                .get_command_with_profile(profile)
+                .expect("opencode supports high effort"),
+            (
+                "opencode",
+                vec![
+                    "run".into(),
+                    "--auto".into(),
+                    "--model".into(),
+                    "configured-model".into(),
+                    "--variant".into(),
+                    "high".into(),
+                ],
+            )
+        );
     }
 
     #[test]
@@ -415,6 +476,18 @@ mod tests {
                 })
                 .is_err()
         );
+    }
+
+    #[test]
+    fn opencode_passes_dynamic_variants_through_unchanged() {
+        let (_, args) = Agent::OpenCode
+            .get_command_with_profile(InvocationProfile {
+                agent: Agent::OpenCode,
+                model: None,
+                reasoning_effort: Some("max"),
+            })
+            .expect("opencode validates model-specific and custom variants itself");
+        assert_eq!(args, vec!["run", "--auto", "--variant", "max"]);
     }
 
     #[test]
@@ -461,6 +534,16 @@ mod tests {
             .expect_err("codex does not support max effort");
         assert!(invalid.contains("codex does not support --reasoning-effort max"));
         assert!(invalid.contains("minimal, low, medium, high, xhigh"));
+
+        let copilot = Agent::Copilot
+            .get_command_with_profile(InvocationProfile {
+                agent: Agent::Copilot,
+                model: None,
+                reasoning_effort: Some("nope"),
+            })
+            .expect_err("copilot rejects values outside its native enum");
+        assert!(copilot.contains("copilot does not support --reasoning-effort nope"));
+        assert!(copilot.contains("none, minimal, low, medium, high, xhigh, max"));
     }
 
     #[test]
@@ -545,6 +628,24 @@ mod tests {
             .expect("pi supports --model");
         assert_eq!(program, "pi");
         assert_eq!(args, vec!["-p", "--model", "openai/gpt-4o"]);
+
+        let (program, args) = Agent::OpenCode
+            .get_command_with_model(Some("anthropic/claude-sonnet-4-5"))
+            .expect("opencode supports --model");
+        assert_eq!(program, "opencode");
+        assert_eq!(
+            args,
+            vec!["run", "--auto", "--model", "anthropic/claude-sonnet-4-5"]
+        );
+
+        let (program, args) = Agent::Copilot
+            .get_command_with_model(Some("gpt-5"))
+            .expect("copilot supports --model");
+        assert_eq!(program, "copilot");
+        assert_eq!(
+            args,
+            vec!["--allow-all", "--no-ask-user", "--model", "gpt-5"]
+        );
     }
 
     #[test]
@@ -562,5 +663,17 @@ mod tests {
             .expect("antigravity can use its persisted model");
         assert_eq!(program, "agy");
         assert_eq!(args, vec!["-p", "--dangerously-skip-permissions"]);
+
+        let (program, args) = Agent::OpenCode
+            .get_command_with_model(None)
+            .expect("opencode can use its persisted model");
+        assert_eq!(program, "opencode");
+        assert_eq!(args, vec!["run", "--auto"]);
+
+        let (program, args) = Agent::Copilot
+            .get_command_with_model(None)
+            .expect("copilot can use its default model");
+        assert_eq!(program, "copilot");
+        assert_eq!(args, vec!["--allow-all", "--no-ask-user"]);
     }
 }

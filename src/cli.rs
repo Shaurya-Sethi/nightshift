@@ -39,7 +39,7 @@ pub struct Args {
     /// Explicit model for the selected agent; omitted means use the agent's persisted default.
     #[arg(long)]
     pub model: Option<String>,
-    /// Whole-run agent-native reasoning-effort default. Preflight rows can override this default; omission uses the agent default. Cursor uses model-encoded effort; choose a model slug instead of --reasoning-effort.
+    /// Whole-run agent-native reasoning-effort default. Preflight rows can override this default; omission uses the agent default. Cursor uses model-encoded effort; choose a model slug instead of --reasoning-effort. OpenCode whole-run --variant values pass through; --pick-efforts uses the documented legend.
     #[arg(long)]
     pub reasoning_effort: Option<String>,
     /// TTY-only preflight that assigns effort per simulated-solvable issue while keeping the model fixed; may combine with --pick-agents and is mutually exclusive with --pick-models.
@@ -97,8 +97,21 @@ impl Args {
 #[cfg(test)]
 mod tests {
     use super::Args;
+    use crate::agent::Agent;
     use crate::invocation_profile::PreflightDimensions;
     use clap::{CommandFactory, Parser};
+
+    #[test]
+    fn opencode_agent_value_is_unhyphenated() {
+        let args = Args::try_parse_from(["nightshift", "--prd", "1", "--agent", "opencode"])
+            .expect("opencode is the clap value name");
+        assert_eq!(args.agent, Agent::OpenCode);
+
+        assert!(
+            Args::try_parse_from(["nightshift", "--prd", "1", "--agent", "open-code"]).is_err(),
+            "OpenCode must not kebab-case to open-code"
+        );
+    }
 
     #[test]
     fn help_explains_cursor_model_encoded_effort() {
@@ -116,6 +129,9 @@ mod tests {
         let help = command.render_long_help().to_string();
 
         assert!(help.contains("Preflight rows can override this default"));
+        assert!(help.contains(
+            "OpenCode whole-run --variant values pass through; --pick-efforts uses the documented legend"
+        ));
     }
 
     #[test]

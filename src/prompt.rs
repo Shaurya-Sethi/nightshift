@@ -180,12 +180,11 @@ mod tests {
 
     #[test]
     fn non_pi_agents_keep_shared_default_directives() {
-        for agent in [
-            Agent::Claude,
-            Agent::Codex,
-            Agent::Antigravity,
-            Agent::Cursor,
-        ] {
+        for agent in Agent::all()
+            .iter()
+            .copied()
+            .filter(|agent| *agent != Agent::Pi)
+        {
             assert_eq!(default_directives_for(agent), default_directives());
         }
     }

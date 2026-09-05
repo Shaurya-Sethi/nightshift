@@ -34,7 +34,7 @@ nightshift --prd 12 --agent claude --model claude-sonnet-4-6
 | Flag                  | Required | Default                   | Description                                                                                          |
 | --------------------- | -------- | ------------------------- | ---------------------------------------------------------------------------------------------------- |
 | `--prd`               | yes      | n/a                       | The PRD issue number to work through                                                                 |
-| `--agent`             | yes      | n/a                       | Whole-run default agent: `claude`, `codex`, `antigravity`, `cursor`, `pi`. `--pick-agents` may override per issue. |
+| `--agent`             | yes      | n/a                       | Whole-run default agent: `claude`, `codex`, `antigravity`, `cursor`, `pi`, `opencode`, `copilot`. `--pick-agents` may override per issue. |
 | `--model`             |          | agent's persisted default | Whole-run model for agents that support non-interactive model selection                              |
 | `--reasoning-effort`  |          | agent's persisted default | Whole-run agent-native effort. Cursor uses a model slug instead.                                     |
 | `--pick-agents`       |          | `false`                   | TTY-only: pick an agent per planned issue. May combine with either other pick flag.                  |
@@ -57,7 +57,7 @@ An **Invocation Profile** is agent plus model plus reasoning effort for one invo
 
 `--pick-efforts` and `--pick-models` are mutually exclusive. `--pick-agents` stacks with either: `--pick-agents --pick-efforts` collects agent then effort; `--pick-agents --pick-models` collects agent then model then effort. Agent picker prints one numbered legend for all compatible agents; it never probes `PATH`. In every picker, Enter leaves field blank. A blank agent keeps `--agent`; blank model or effort cascades to whole-run default and then agent default. When an Agent Preflight row chooses another agent, whole-run `--model` and `--reasoning-effort` do not cross that boundary: that agent uses its own defaults. This is **Same-Agent Defaults Inheritance**.
 
-Picker is one in-memory batch before the loop, covering the **Simulated Solvable Set** (planned issues, including those blocked only by another planned issue). Press `q` or Ctrl-C to abort; no partial selection starts a run. Built-in directives follow the resolved agent; one `--prompt-file` overrides them for every issue. Pick modes need a TTY (else fail fast to whole-run `--agent`, `--model`, and `--reasoning-effort`). Without `--pick-agents`, `--pick-efforts` is only for `pi`, `claude`, and `codex`; Cursor `--pick-models` is model-only; Antigravity supports neither. With `--pick-agents`, each row skips unsupported knobs (Cursor: no separate effort; Antigravity: no model or effort).
+Picker is one in-memory batch before the loop, covering the **Simulated Solvable Set** (planned issues, including those blocked only by another planned issue). Press `q` or Ctrl-C to abort; no partial selection starts a run. Built-in directives follow the resolved agent; one `--prompt-file` overrides them for every issue. Pick modes need a TTY (else fail fast to whole-run `--agent`, `--model`, and `--reasoning-effort`). Without `--pick-agents`, `--pick-efforts` is only for `pi`, `copilot`, `claude`, `codex`, and `opencode`; Cursor `--pick-models` is model-only; Antigravity supports neither. With `--pick-agents`, each row skips unsupported knobs (Cursor: no separate effort; Antigravity: no model or effort).
 
 `--dry-run` does not skip a requested picker: complete preflight first, then nightshift prints every planned issue with resolved agent, model, and effort, first issue's prompt, and its would-invoke command. No agent process starts. Without a picker, dry-run resolves rows from whole-run defaults and agent defaults.
 
@@ -73,6 +73,8 @@ nightshift hands your agent a single prompt per issue. These agents work out of 
 | `antigravity`   | `agy`       | no                   | no; explicit model or effort fails fast | [Google Antigravity CLI](https://antigravity.google/blog/introducing-google-antigravity-cli) |
 | `cursor`        | `agent`     | yes                  | **Model-Encoded Effort**; no separate effort flag | [Cursor](https://cursor.com/cli) |
 | `pi`            | `pi`        | yes                  | `--thinking`: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max` | [Pi](https://pi.dev/) |
+| `opencode`      | `opencode`  | yes                  | `--variant`; preflight legend: `low`, `medium`, `high`, `xhigh`, `minimal`, `max`; whole-run variants pass through unchanged | [OpenCode](https://opencode.ai/docs/cli) (`--model` uses `provider/model`) |
+| `copilot`       | `copilot`   | yes                  | `--reasoning-effort`: `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max` | [GitHub Copilot CLI](https://docs.github.com/en/copilot/how-tos/copilot-cli/automate-copilot-cli/run-cli-programmatically) (requires auth/subscription; org policy must allow CLI automation) |
 
 
 > [!IMPORTANT]
@@ -80,7 +82,7 @@ nightshift hands your agent a single prompt per issue. These agents work out of 
 
 When `--model` is omitted, nightshift lets the selected agent use its persisted default model. When it is provided, nightshift passes it through unchanged for agents with a documented non-interactive model flag. If an agent does not support that flag, nightshift fails fast and tells you to retry without `--model`.
 
-nightshift validates at the **capability level** only: whether the selected agent supports model or effort selection, and whether an effort is in nightshift's documented agent-native set. It does not scrape model catalogs, validate model names, rewrite model slugs, or enforce model-specific effort matrices. The selected agent remains responsible for accepting a model and any model-specific effort subset.
+nightshift validates at the **capability level** only: whether the selected agent supports model or effort selection, and—except for OpenCode's pass-through variants—whether an effort is in nightshift's documented agent-native set. It does not scrape model catalogs, validate model names, rewrite model slugs, or enforce model-specific effort matrices. The selected agent remains responsible for accepting a model and any model-specific effort subset.
 
 To add support for a new agent, see [CONTRIBUTING.md](CONTRIBUTING.md).
 

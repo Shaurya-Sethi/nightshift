@@ -26,7 +26,7 @@ Do not infer flags from a blog post, another wrapper, or a model catalog. If loc
 
 ### Step-by-step
 
-1. Add an `Agent` variant with a `///` doc comment naming its CLI:
+1. Add an `Agent` variant with a `///` doc comment naming its CLI. If clap `ValueEnum` kebab-case would be the wrong `--agent` string (`OpenCode` → `open-code`), set `#[value(name = "...")]`:
 
     ```rust
     /// My new agent CLI, invoked as `mynewagent`.
@@ -60,7 +60,7 @@ Do not infer flags from a blog post, another wrapper, or a model catalog. If loc
 
 5. Validate at the capability level only:
 
-    - Validate only whether the agent supports model/effort selection and whether a supplied effort belongs to its documented native enum.
+    - Validate only whether the agent supports model/effort selection and whether a supplied effort belongs to its documented native enum. Permit pass-through variants only when the agent documents dynamic variants; state that exception explicitly and leave their exact acceptance to the agent.
     - Do not scrape model catalogs, parse or fuzzy-match model names, or pre-validate model strings.
     - Do not own per-model effort matrices. Pass model strings and let the agent reject a model or model-specific effort subset at runtime.
 
@@ -125,7 +125,7 @@ Tests live next to the code they guard: `#[cfg(test)]` modules at the bottom of 
 **Secondary:** pure string helpers (e.g. GitHub remote slug parsing) and orchestrator loop tests via trait mocks (`GithubIssues`, `GitOps`, `AgentRunner`).
 
 **Intentionally out of scope:**
-- Testing `main` / clap flag parsing, except pick-flag contracts in [`src/cli.rs`](src/cli.rs) (mutual exclusion of `--pick-efforts` / `--pick-models`, Preflight Dimension mapping, Cursor help text). Those are workflow contracts, not parser-string tests.
+- Testing `main` / clap flag parsing, except pick-flag contracts in [`src/cli.rs`](src/cli.rs) (mutual exclusion of `--pick-efforts` / `--pick-models`, Preflight Dimension mapping, Cursor help text, OpenCode `--agent` value name vs kebab-case `open-code`). Those are workflow contracts, not parser-string tests.
 - Adapter subprocess wiring
 - Network or auth-dependent flows
 - Snapshotting every function

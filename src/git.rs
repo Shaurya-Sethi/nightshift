@@ -108,8 +108,9 @@ impl GitOps for GitCliAdapter {
 ///
 /// The repository comparison is based on configured git remotes, not directory
 /// names. Remote URLs are normalized with `parse_github_repo_slug` before
-/// comparison so SSH, HTTPS, and common credential-bearing GitHub URLs match the
-/// same `owner/name` slug.
+/// comparison so SSH, HTTPS, credential-bearing, and trailing-slash GitHub URLs
+/// match the same `owner/name` slug. Extra path segments after `owner/name` are
+/// ignored.
 pub fn resolve_workspace(repo: &str) -> Result<PathBuf, Box<dyn std::error::Error>> {
     let start = std::env::current_dir()?;
     let Some(toplevel) = git_toplevel(&start) else {
@@ -217,8 +218,9 @@ fn origin_matches_repo(origin: &str, repo: &str) -> bool {
 ///
 /// Supported forms include `git@github.com:owner/repo.git`,
 /// `ssh://git@github.com/owner/repo.git`, `https://github.com/owner/repo`,
-/// `http://github.com/owner/repo.git`, and URLs with credentials before
-/// `github.com`. Non-GitHub remotes return [`None`].
+/// `http://github.com/owner/repo.git`, URLs with a trailing slash, and URLs with
+/// credentials before `github.com`. Extra path segments after `owner/name` are
+/// ignored. Non-GitHub remotes return [`None`].
 fn parse_github_repo_slug(remote: &str) -> Option<String> {
     let remote = remote.trim().trim_end_matches(".git");
 
@@ -253,9 +255,10 @@ fn parse_github_repo_slug(remote: &str) -> Option<String> {
 
 /// Builds an `owner/name` slug from the path portion of a GitHub remote URL.
 fn slug_from_path(path: &str) -> Option<String> {
-    let path = path.trim_start_matches('/');
-    let (owner, repo) = path.split_once('/')?;
-    if owner.is_empty() || repo.is_empty() {
+    let mut parts = path.split('/').filter(|s| !s.is_empty());
+    let owner = parts.next()?;
+    let repo = parts.next()?.trim_end_matches(".git");
+    if repo.is_empty() {
         return None;
     }
     Some(format!("{owner}/{repo}"))
@@ -277,6 +280,22 @@ mod tests {
     fn parse_https_url() {
         assert_eq!(
             parse_github_repo_slug("https://github.com/foobar/nightshift"),
+            Some("foobar/nightshift".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_https_url_with_trailing_slash() {
+        assert_eq!(
+            parse_github_repo_slug("https://github.com/foobar/nightshift/"),
+            Some("foobar/nightshift".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_https_url_ignores_extra_path_segments() {
+        assert_eq!(
+            parse_github_repo_slug("https://github.com/foobar/nightshift/pull/1"),
             Some("foobar/nightshift".to_string())
         );
     }

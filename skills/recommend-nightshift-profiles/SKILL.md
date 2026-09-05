@@ -25,7 +25,7 @@ Ask, in order:
    - **Effort dimension** (`--pick-efforts`) **or** **model dimension** (`--pick-models`) — mutually exclusive; either may stack with `--pick-agents`.
 4. **Models under consideration** — user names the allowlist and/or whole-run pin. Do **not** scrape agent model catalogs. When `--pick-agents` is on and agents will differ, collect model notes **per candidate agent** the user might choose (still user-supplied, not catalog scrape).
 
-**Capability hard-stop** before any dry-run: check chosen whole-run agent and enabled dimensions against this repo's README agent matrix. Refuse illegal whole-run combos. Point at the matrix; do not invent argv.
+**Capability hard-stop** before any dry-run: check chosen whole-run agent and enabled dimensions against this repo's README agent matrix. Refuse illegal whole-run combos. Point at the matrix; do not invent argv. When issue #5 lands OpenCode and Copilot, reread the README matrix rather than assuming argv.
 
 Rules of thumb:
 
@@ -87,13 +87,11 @@ Using PRD, issue bodies, and codebase as needed (fetch/read however repo practic
 - **Antigravity:** no model/effort columns — recommend agent only; model/effort cells = `—`.
 - Other agents: use README matrix enums for effort; free-string models from the user allowlist.
 
-Recommend only Claude, Codex, Cursor, Pi, and Antigravity.
-
 **Done when:** every planned issue has a recommendation and a short **why** defending fit (not overkill, not underpowered), including why that agent when agents vary.
 
 ### 6. Optional extras
 
-Ask whether to add any non-profile flags the user cares about (e.g. `--prompt-file`, resume floor). Only stamp flags they accept. Do not invent defaults for extras.
+Ask whether to add any non-profile flags the user cares about (e.g. `--prompt-file`, `--issue`). Only stamp flags they accept. Do not invent defaults for extras.
 
 Note: one `--prompt-file` overrides built-ins for **every** issue regardless of per-issue agent.
 

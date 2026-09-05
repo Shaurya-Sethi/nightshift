@@ -183,7 +183,6 @@ fn drive(
 ) -> Result<Option<DeferredDryRun>, Box<dyn std::error::Error>> {
     watch.emit(WatchEvent::Session {
         prd: config.prd,
-        prd_title: String::new(),
         repo: config.repo.to_string(),
         branch: config.base_branch.to_string(),
     });
@@ -332,7 +331,11 @@ fn run_loop(
     Ok(())
 }
 
-fn fail(watch: &dyn Watch, issue: u32, message: String) -> Result<(), Box<dyn std::error::Error>> {
+fn fail<T>(
+    watch: &dyn Watch,
+    issue: u32,
+    message: String,
+) -> Result<T, Box<dyn std::error::Error>> {
     watch.emit(WatchEvent::Failed {
         issue,
         message: message.clone(),
@@ -545,20 +548,28 @@ fn run_dry_run(
     watch.emit(WatchEvent::Hygiene);
 
     if let Err(e) = runtime.git.ensure_hygiene(config.base_branch) {
-        let message = format!("nightshift: git hygiene check failed: {}. Exiting.", e);
-        watch.emit(WatchEvent::Failed {
-            issue: config.prd,
-            message: message.clone(),
-        });
-        return Err(message.into());
+        return fail(
+            watch,
+            config.prd,
+            format!("nightshift: git hygiene check failed: {}. Exiting.", e),
+        );
     }
 
-    let issues_json = runtime
-        .github
-        .fetch_issues(config.repo)
-        .map_err(|e| format!("nightshift: failed to fetch issues: {}. Exiting.", e))?;
+    let issues_json = match runtime.github.fetch_issues(config.repo) {
+        Ok(json) => json,
+        Err(e) => {
+            return fail(
+                watch,
+                config.prd,
+                format!("nightshift: failed to fetch issues: {}. Exiting.", e),
+            );
+        }
+    };
 
-    let plan = plan_order(&issues_json, config.prd, config.issue)?;
+    let plan = match plan_order(&issues_json, config.prd, config.issue) {
+        Ok(plan) => plan,
+        Err(e) => return fail(watch, config.prd, e.to_string()),
+    };
     emit_roster(watch, &plan, &config);
 
     if plan.planned.is_empty() && plan.blocked.is_empty() {
@@ -567,11 +578,14 @@ fn run_dry_run(
         return Ok(None);
     }
 
-    let (planned, agent_cmd) = build_dry_run_preview(
+    let (planned, agent_cmd) = match build_dry_run_preview(
         &plan.planned,
         config.whole_run_defaults,
         &config.per_issue_profiles,
-    )?;
+    ) {
+        Ok(preview) => preview,
+        Err(e) => return fail(watch, config.prd, e),
+    };
     let blocked: Vec<(u32, String)> = plan
         .blocked
         .iter()
@@ -598,34 +612,21 @@ fn run_dry_run(
     };
 
     watch.emit(WatchEvent::Done);
-
-    if config.tui {
-        Ok(Some(DeferredDryRun {
-            planned: planned
-                .iter()
-                .map(|(number, title, profile)| DeferredAssignment {
-                    number: *number,
-                    title: (*title).to_string(),
-                    agent: profile.agent,
-                    model: profile.model.map(str::to_string),
-                    effort: profile.reasoning_effort.map(str::to_string),
-                })
-                .collect(),
-            blocked,
-            agent_cmd,
-            prompt,
-        }))
-    } else {
-        let blocked_refs: Vec<(u32, &str)> = blocked
+    Ok(Some(DeferredDryRun {
+        planned: planned
             .iter()
-            .map(|(number, title)| (*number, title.as_str()))
-            .collect();
-        console::dry_run_planned_order(&planned, &blocked_refs, &agent_cmd);
-        if let Some(prompt) = &prompt {
-            console::dry_run_prompt(prompt);
-        }
-        Ok(None)
-    }
+            .map(|(number, title, profile)| DeferredAssignment {
+                number: *number,
+                title: (*title).to_string(),
+                agent: profile.agent,
+                model: profile.model.map(str::to_string),
+                effort: profile.reasoning_effort.map(str::to_string),
+            })
+            .collect(),
+        blocked,
+        agent_cmd,
+        prompt,
+    }))
 }
 
 fn complete_without_candidates(prd: u32, min_issue: u32, has_open_children: bool, tui: bool) {
@@ -1643,6 +1644,67 @@ mod tests {
         }
     }
 
+    struct RawIssuesGithub {
+        inner: MockGithub,
+        payload: String,
+    }
+
+    impl GithubIssues for RawIssuesGithub {
+        fn resolve_repo(&self, repo: Option<&str>) -> Result<String, Box<dyn std::error::Error>> {
+            self.inner.resolve_repo(repo)
+        }
+
+        fn fetch_issues(&self, _repo: &str) -> Result<String, Box<dyn std::error::Error>> {
+            Ok(self.payload.clone())
+        }
+
+        fn fetch_issue_body(
+            &self,
+            repo: &str,
+            issue_number: u32,
+        ) -> Result<String, Box<dyn std::error::Error>> {
+            self.inner.fetch_issue_body(repo, issue_number)
+        }
+
+        fn is_issue_closed(
+            &self,
+            repo: &str,
+            issue_number: u32,
+        ) -> Result<bool, Box<dyn std::error::Error>> {
+            self.inner.is_issue_closed(repo, issue_number)
+        }
+    }
+
+    struct FailingFetchGithub {
+        inner: MockGithub,
+    }
+
+    impl GithubIssues for FailingFetchGithub {
+        fn resolve_repo(&self, repo: Option<&str>) -> Result<String, Box<dyn std::error::Error>> {
+            self.inner.resolve_repo(repo)
+        }
+
+        fn fetch_issues(&self, _repo: &str) -> Result<String, Box<dyn std::error::Error>> {
+            Err("gh: failed to list issues".into())
+        }
+
+        fn fetch_issue_body(
+            &self,
+            repo: &str,
+            issue_number: u32,
+        ) -> Result<String, Box<dyn std::error::Error>> {
+            self.inner.fetch_issue_body(repo, issue_number)
+        }
+
+        fn is_issue_closed(
+            &self,
+            repo: &str,
+            issue_number: u32,
+        ) -> Result<bool, Box<dyn std::error::Error>> {
+            self.inner.is_issue_closed(repo, issue_number)
+        }
+    }
+
     struct StopAfterCurrent<'a> {
         closer: RecordingCloser<'a>,
         watch: &'a crate::tui::WatchLog,
@@ -1873,6 +1935,68 @@ mod tests {
                 .iter()
                 .any(|event| matches!(event, WatchEvent::Running { .. }))
         );
+    }
+
+    #[test]
+    fn tui_dry_run_bad_json_emits_failed_and_returns_parse_error() {
+        let github = RawIssuesGithub {
+            inner: mock_github("[]", HashMap::from([(42, "Product requirements".into())])),
+            payload: "not-json{".to_string(),
+        };
+        let agent = idle_agent();
+        let watch = crate::tui::WatchLog::new();
+        let config = tui_config(
+            true,
+            defaults(Agent::Pi, None, None),
+            RunEphemeralProfileMap::new(),
+            PreflightDimensions::default(),
+            DirectivePolicy::Replace("test directives"),
+        );
+        let error = run_watched(config, runtime(&github, &agent), &watch)
+            .expect_err("malformed issue list must fail")
+            .to_string();
+        assert!(error.contains("failed to parse issue list"), "{error}");
+        assert!(
+            error.contains("not-json{") || error.contains("expected"),
+            "{error}"
+        );
+        assert!(events_contain(&watch, |event| {
+            matches!(event, WatchEvent::Failed { issue: 42, .. })
+        }));
+        assert!(!events_contain(&watch, |event| matches!(
+            event,
+            WatchEvent::Done
+        )));
+        assert!(!agent.ran.get());
+    }
+
+    #[test]
+    fn tui_dry_run_fetch_error_emits_failed_and_returns_original() {
+        let github = FailingFetchGithub {
+            inner: mock_github("[]", HashMap::from([(42, "Product requirements".into())])),
+        };
+        let agent = idle_agent();
+        let watch = crate::tui::WatchLog::new();
+        let config = tui_config(
+            true,
+            defaults(Agent::Pi, None, None),
+            RunEphemeralProfileMap::new(),
+            PreflightDimensions::default(),
+            DirectivePolicy::Replace("test directives"),
+        );
+        let error = run_watched(config, runtime(&github, &agent), &watch)
+            .expect_err("fetch error must fail")
+            .to_string();
+        assert!(error.contains("failed to fetch issues"), "{error}");
+        assert!(error.contains("gh: failed to list issues"), "{error}");
+        assert!(events_contain(&watch, |event| {
+            matches!(event, WatchEvent::Failed { issue: 42, .. })
+        }));
+        assert!(!events_contain(&watch, |event| matches!(
+            event,
+            WatchEvent::Done
+        )));
+        assert!(!agent.ran.get());
     }
 
     #[test]

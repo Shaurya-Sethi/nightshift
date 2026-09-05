@@ -11,6 +11,7 @@
 //! ```
 
 use std::io::{self, stdout};
+use std::panic::{self, AssertUnwindSafe};
 #[cfg(test)]
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -187,10 +188,10 @@ impl RosterIssue {
 /// Orchestration facts for the Watch Board. Never includes agent logs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum WatchEvent {
-    /// Header facts once known.
+    /// Header facts once known. Preview titles stay on [`BoardState`]; live
+    /// runs do not send an empty PRD title here.
     Session {
         prd: u32,
-        prd_title: String,
         repo: String,
         branch: String,
     },
@@ -566,14 +567,8 @@ impl BoardState {
     /// [`WatchEvent::Completed`], never from a missing plan row.
     pub(crate) fn apply(&mut self, event: WatchEvent) {
         match event {
-            WatchEvent::Session {
-                prd,
-                prd_title,
-                repo,
-                branch,
-            } => {
+            WatchEvent::Session { prd, repo, branch } => {
                 self.prd = prd;
-                self.prd_title = prd_title;
                 self.repo = repo;
                 self.branch = branch;
             }
@@ -597,8 +592,19 @@ impl BoardState {
             WatchEvent::Failed { issue, message } => {
                 self.mark_status(issue, IssueStatus::Failed);
                 self.phase = Phase::Failed { issue, message };
+                self.clear_stop_notice();
             }
-            WatchEvent::Done => self.phase = Phase::Done,
+            WatchEvent::Done => {
+                self.phase = Phase::Done;
+                self.clear_stop_notice();
+            }
+        }
+    }
+
+    fn clear_stop_notice(&mut self) {
+        self.stop_pending = false;
+        if self.notice.as_deref() == Some("stop after current issue") {
+            self.notice = None;
         }
     }
 
@@ -737,7 +743,10 @@ impl Watch for LiveWatch {
 ///
 /// The UI thread owns raw mode and the alternate screen. `q` / Ctrl-C while
 /// work is active sets the cancel flag; the orchestrator must honor it at safe
-/// boundaries. This waits for `work`, then for dismiss, then joins the UI.
+/// boundaries. Every `work` result is turned into a terminal [`WatchEvent`]
+/// before join. Producer disconnect without Done/Failed, and a panic in `work`,
+/// still let the UI restore instead of hanging. Original `work` errors are
+/// preserved; success is never invented.
 ///
 /// # Errors
 ///
@@ -751,11 +760,14 @@ pub(crate) fn with_live_board<T>(
         let (event_tx, event_rx) = mpsc::channel();
         let (ready_tx, ready_rx) = mpsc::channel();
         let stop = Arc::new(AtomicBool::new(false));
+        let abort = Arc::new(AtomicBool::new(false));
         let ui_stop = stop.clone();
+        let ui_abort = abort.clone();
+        let prd = header.prd;
         let handle = scope.spawn(move || match TerminalGuard::enter() {
             Ok((_guard, mut terminal)) => {
                 let _ = ready_tx.send(Ok(()));
-                ui_loop(&mut terminal, event_rx, ui_stop, header)
+                ui_loop(&mut terminal, event_rx, ui_stop, ui_abort, header)
             }
             Err(err) => {
                 let message = err.to_string();
@@ -774,26 +786,95 @@ pub(crate) fn with_live_board<T>(
             tx: event_tx,
             stop: stop.clone(),
         };
-        let work_result = work(&watch);
+        let work_result = panic::catch_unwind(AssertUnwindSafe(|| work(&watch)));
+        if emit_after_work(&watch, prd, &work_result) {
+            abort.store(true, Ordering::SeqCst);
+        }
         drop(watch);
         let ui_result = handle
             .join()
             .unwrap_or_else(|_| Err(io::Error::other("Watch Board UI thread panicked")));
-        match (work_result, ui_result) {
-            (Err(work), _) => Err(work),
-            (Ok(_value), Err(ui)) => Err(ui.into()),
-            (Ok(value), Ok(())) => Ok(value),
+        match work_result {
+            Err(payload) => panic::resume_unwind(payload),
+            Ok(Err(work)) => Err(work),
+            Ok(Ok(value)) => match ui_result {
+                Err(ui) => Err(ui.into()),
+                Ok(()) => Ok(value),
+            },
         }
     })
+}
+
+struct ChannelDrain {
+    received: bool,
+}
+
+fn take_events(state: &mut BoardState, rx: &mpsc::Receiver<WatchEvent>) -> ChannelDrain {
+    let mut received = false;
+    let mut disconnected = false;
+    loop {
+        match rx.try_recv() {
+            Ok(event) => {
+                received = true;
+                state.apply(event);
+            }
+            Err(mpsc::TryRecvError::Empty) => break,
+            Err(mpsc::TryRecvError::Disconnected) => {
+                disconnected = true;
+                break;
+            }
+        }
+    }
+    if disconnected && !state.can_dismiss() {
+        state.apply(WatchEvent::Failed {
+            issue: state.prd,
+            message: "nightshift: orchestration ended unexpectedly".to_string(),
+        });
+    }
+    ChannelDrain { received }
+}
+
+fn tick_elapsed(state: &mut BoardState, started: Instant) {
+    if !state.can_dismiss() {
+        state.elapsed = started.elapsed();
+    }
+}
+
+fn emit_after_work<T>(
+    watch: &dyn Watch,
+    prd: u32,
+    work: &thread::Result<Result<T, Box<dyn std::error::Error>>>,
+) -> bool {
+    match work {
+        Ok(Ok(_)) => {
+            watch.emit(WatchEvent::Done);
+            false
+        }
+        Ok(Err(err)) => {
+            watch.emit(WatchEvent::Failed {
+                issue: prd,
+                message: err.to_string(),
+            });
+            false
+        }
+        Err(_) => {
+            watch.emit(WatchEvent::Failed {
+                issue: prd,
+                message: "nightshift: orchestration panicked".to_string(),
+            });
+            true
+        }
+    }
 }
 
 fn ui_loop(
     terminal: &mut ratatui::Terminal<CrosstermBackend<io::Stdout>>,
     rx: mpsc::Receiver<WatchEvent>,
     stop: Arc<AtomicBool>,
+    abort: Arc<AtomicBool>,
     header: LiveHeader,
 ) -> io::Result<()> {
-    let result = ui_loop_inner(terminal, rx, &stop, header);
+    let result = ui_loop_inner(terminal, rx, &stop, &abort, header);
     if result.is_err() {
         stop.store(true, Ordering::SeqCst);
         restore_terminal();
@@ -805,41 +886,49 @@ fn ui_loop_inner(
     terminal: &mut ratatui::Terminal<CrosstermBackend<io::Stdout>>,
     rx: mpsc::Receiver<WatchEvent>,
     stop: &AtomicBool,
+    abort: &AtomicBool,
     header: LiveHeader,
 ) -> io::Result<()> {
     let theme = Theme::from_env();
     let mut state = BoardState::live_run(header.prd, header.repo, header.branch);
     let mut phase_started = Instant::now();
+    let mut drawn = false;
     loop {
-        let mut phase_changed = false;
-        loop {
-            match rx.try_recv() {
-                Ok(event) => {
-                    let before = std::mem::discriminant(&state.phase);
-                    state.apply(event);
-                    if std::mem::discriminant(&state.phase) != before {
-                        phase_changed = true;
-                    }
-                }
-                Err(mpsc::TryRecvError::Empty) => break,
-                Err(mpsc::TryRecvError::Disconnected) => break,
-            }
+        if abort.load(Ordering::SeqCst) {
+            return Ok(());
         }
-        if phase_changed {
+        let before = std::mem::discriminant(&state.phase);
+        let drain = take_events(&mut state, &rx);
+        if abort.load(Ordering::SeqCst) {
+            return Ok(());
+        }
+        let phase_changed = std::mem::discriminant(&state.phase) != before;
+        if phase_changed && !state.can_dismiss() {
             phase_started = Instant::now();
         }
-        state.elapsed = phase_started.elapsed();
-        terminal.draw(|frame| render(frame, &state, &theme))?;
+        tick_elapsed(&mut state, phase_started);
+        let waiting = state.can_dismiss();
+        if !waiting || drain.received || !drawn {
+            terminal.draw(|frame| render(frame, &state, &theme))?;
+            drawn = true;
+        }
         if !event::poll(Duration::from_millis(200))? {
             continue;
         }
         match event::read()? {
             Event::Key(key) if key.kind == KeyEventKind::Press => match state.handle_key(key) {
-                BoardCommand::Stop => stop.store(true, Ordering::SeqCst),
+                BoardCommand::Stop => {
+                    stop.store(true, Ordering::SeqCst);
+                    terminal.draw(|frame| render(frame, &state, &theme))?;
+                }
                 BoardCommand::Quit => return Ok(()),
-                BoardCommand::Continue => {}
+                BoardCommand::Continue => {
+                    terminal.draw(|frame| render(frame, &state, &theme))?;
+                }
             },
-            Event::Resize(_, _) => {}
+            Event::Resize(_, _) => {
+                terminal.draw(|frame| render(frame, &state, &theme))?;
+            }
             _ => {}
         }
     }
@@ -1088,15 +1177,7 @@ fn render_details(frame: &mut Frame, state: &BoardState, theme: Theme, area: Rec
 }
 
 fn detail_lines<'a>(state: &'a BoardState, theme: Theme) -> Vec<Line<'a>> {
-    let Some(issue) = state.selected_issue() else {
-        return vec![Line::from("no issues")];
-    };
-    let model = issue.model.as_deref().unwrap_or("agent default");
-    let effort = issue.effort.as_deref().unwrap_or("agent default");
     let mut lines = vec![
-        Line::from(format!("agent   {}", issue.agent)),
-        Line::from(format!("model   {model}")),
-        Line::from(format!("effort  {effort}")),
         Line::from(vec![
             Span::raw("phase   "),
             Span::styled(state.phase.label(), theme.phase(&state.phase)),
@@ -1105,11 +1186,6 @@ fn detail_lines<'a>(state: &'a BoardState, theme: Theme) -> Vec<Line<'a>> {
             "elapsed {}",
             crate::console::format_elapsed(state.elapsed)
         )),
-        Line::from(vec![
-            Span::raw("status  "),
-            Span::styled(issue.status.as_str(), theme.status(issue.status)),
-        ]),
-        Line::from(Span::styled(issue.title.as_str(), theme.bold())),
     ];
     if let Phase::Failed { message, .. } = &state.phase {
         for line in message.lines() {
@@ -1119,6 +1195,20 @@ fn detail_lines<'a>(state: &'a BoardState, theme: Theme) -> Vec<Line<'a>> {
             )));
         }
     }
+    let Some(issue) = state.selected_issue() else {
+        lines.push(Line::from("no issues"));
+        return lines;
+    };
+    let model = issue.model.as_deref().unwrap_or("agent default");
+    let effort = issue.effort.as_deref().unwrap_or("agent default");
+    lines.push(Line::from(format!("agent   {}", issue.agent)));
+    lines.push(Line::from(format!("model   {model}")));
+    lines.push(Line::from(format!("effort  {effort}")));
+    lines.push(Line::from(vec![
+        Span::raw("status  "),
+        Span::styled(issue.status.as_str(), theme.status(issue.status)),
+    ]));
+    lines.push(Line::from(Span::styled(issue.title.as_str(), theme.bold())));
     lines
 }
 
@@ -1574,5 +1664,177 @@ mod tests {
         state.handle_key(key(KeyCode::Char('q')));
         let text = plain(&draw(&state, &Theme::native(), 80, 16));
         assert!(text.contains("stop after current issue"), "{text}");
+    }
+
+    #[test]
+    fn empty_failure_shows_phase_and_error_on_compact_board() {
+        let mut state = BoardState::live_run(42, "owner/repo".into(), "main".into());
+        state.phase = Phase::Failed {
+            issue: 42,
+            message: "nightshift: failed to fetch issues: boom. Exiting.".to_string(),
+        };
+        let text = plain(&draw(&state, &Theme::native(), 40, 16));
+        assert!(text.contains("failed #42"), "{text}");
+        assert!(text.contains("failed to fetch issues"), "{text}");
+        assert!(text.contains("boom"), "{text}");
+    }
+
+    #[test]
+    fn compact_selected_failure_keeps_error_ahead_of_profile() {
+        let state = failed_preview();
+        let text = plain(&draw(&state, &Theme::native(), 40, 16));
+        assert!(text.contains("agent exited 1"), "{text}");
+        assert!(text.contains("failed #16"), "{text}");
+        let error_at = text.find("agent exited 1").expect(&text);
+        let agent_at = text.find("agent   codex");
+        if let Some(agent_at) = agent_at {
+            assert!(
+                error_at < agent_at,
+                "error should precede profile padding: {text}"
+            );
+        }
+    }
+
+    #[test]
+    fn done_clears_stop_pending_and_footer_offers_dismiss() {
+        let mut state = BoardState::live_run(42, "owner/repo".into(), "main".into());
+        state.phase = Phase::Running { issue: 10 };
+        assert_eq!(
+            state.handle_key(key(KeyCode::Char('q'))),
+            BoardCommand::Stop
+        );
+        assert!(state.stop_pending);
+        state.apply(WatchEvent::Done);
+        assert!(!state.stop_pending);
+        assert_eq!(state.notice, None);
+        let text = plain(&draw(&state, &Theme::native(), 80, 16));
+        assert!(text.contains("dismiss"), "{text}");
+        assert!(!text.contains("waiting"), "{text}");
+    }
+
+    #[test]
+    fn failed_clears_stop_pending() {
+        let mut state = BoardState::live_run(42, "owner/repo".into(), "main".into());
+        state.phase = Phase::Running { issue: 10 };
+        state.handle_key(key(KeyCode::Char('q')));
+        state.apply(WatchEvent::Failed {
+            issue: 10,
+            message: "agent exited 1".to_string(),
+        });
+        assert!(!state.stop_pending);
+        assert_eq!(state.notice, None);
+        assert_eq!(
+            state.handle_key(key(KeyCode::Char('q'))),
+            BoardCommand::Quit
+        );
+    }
+
+    #[test]
+    fn tick_elapsed_freezes_once_done() {
+        let mut state = BoardState::live_run(42, "owner/repo".into(), "main".into());
+        state.phase = Phase::Hygiene;
+        let started = Instant::now() - Duration::from_secs(5);
+        tick_elapsed(&mut state, started);
+        assert!(state.elapsed >= Duration::from_secs(5));
+        let frozen = state.elapsed;
+        state.apply(WatchEvent::Done);
+        tick_elapsed(&mut state, Instant::now());
+        assert_eq!(state.elapsed, frozen);
+    }
+
+    #[test]
+    fn disconnect_without_terminal_event_is_failed_and_q_quits() {
+        let mut state = BoardState::live_run(42, "owner/repo".into(), "main".into());
+        state.phase = Phase::Hygiene;
+        let (tx, rx) = mpsc::channel();
+        drop(tx);
+        take_events(&mut state, &rx);
+        match &state.phase {
+            Phase::Failed { issue: 42, message } => {
+                assert!(message.contains("ended unexpectedly"), "{message}");
+            }
+            other => panic!("expected failed, got {other:?}"),
+        }
+        assert_eq!(
+            state.handle_key(key(KeyCode::Char('q'))),
+            BoardCommand::Quit
+        );
+    }
+
+    #[test]
+    fn disconnect_after_done_does_not_invent_failure() {
+        let mut state = BoardState::live_run(42, "owner/repo".into(), "main".into());
+        let (tx, rx) = mpsc::channel();
+        tx.send(WatchEvent::Done).expect("send done");
+        drop(tx);
+        take_events(&mut state, &rx);
+        assert_eq!(state.phase, Phase::Done);
+    }
+
+    #[test]
+    fn disconnect_after_failed_keeps_original_message() {
+        let mut state = BoardState::live_run(42, "owner/repo".into(), "main".into());
+        let (tx, rx) = mpsc::channel();
+        tx.send(WatchEvent::Failed {
+            issue: 10,
+            message: "original boom".to_string(),
+        })
+        .expect("send failed");
+        drop(tx);
+        take_events(&mut state, &rx);
+        match &state.phase {
+            Phase::Failed { message, .. } => assert_eq!(message, "original boom"),
+            other => panic!("expected original failure, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn work_ok_emits_done() {
+        let watch = WatchLog::new();
+        let work: std::thread::Result<Result<(), Box<dyn std::error::Error>>> = Ok(Ok(()));
+        assert!(!emit_after_work(&watch, 42, &work));
+        assert!(matches!(watch.events().last(), Some(WatchEvent::Done)));
+    }
+
+    #[test]
+    fn work_err_emits_original_error_and_not_success() {
+        let watch = WatchLog::new();
+        let err: Box<dyn std::error::Error> =
+            "nightshift: failed to parse issue list: expected ident".into();
+        let work: std::thread::Result<Result<(), Box<dyn std::error::Error>>> = Ok(Err(err));
+        assert!(!emit_after_work(&watch, 42, &work));
+        match watch.events().last() {
+            Some(WatchEvent::Failed { issue: 42, message }) => {
+                assert!(message.contains("failed to parse issue list"), "{message}");
+            }
+            other => panic!("expected failed, got {other:?}"),
+        }
+        assert!(
+            !watch
+                .events()
+                .iter()
+                .any(|event| matches!(event, WatchEvent::Done))
+        );
+    }
+
+    #[test]
+    fn work_panic_finalizes_failed_and_requests_ui_abort() {
+        let watch = WatchLog::new();
+        let work = std::panic::catch_unwind(|| -> Result<(), Box<dyn std::error::Error>> {
+            panic!("boom");
+        });
+        assert!(emit_after_work(&watch, 42, &work));
+        match watch.events().last() {
+            Some(WatchEvent::Failed { issue: 42, message }) => {
+                assert!(message.contains("panicked"), "{message}");
+            }
+            other => panic!("expected failed, got {other:?}"),
+        }
+        assert!(
+            !watch
+                .events()
+                .iter()
+                .any(|event| matches!(event, WatchEvent::Done))
+        );
     }
 }

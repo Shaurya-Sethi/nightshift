@@ -26,15 +26,8 @@ Adding support for a new coding agent CLI requires command wiring, model handlin
 
 3. Decide how the agent handles `--model`:
 
-    - If the CLI has a documented non-interactive model flag, add a matching arm in `get_command_with_model()` that passes the supplied value through unchanged.
-    - If the CLI has no documented non-interactive model flag, reject explicit models with a clear error. The error should tell users to retry without `--model`.
-
-    ```rust
-    Self::MyNewAgent => Ok((
-        "mynewagent",
-        vec!["-p".into(), "--model".into(), model.into()],
-    )),
-    ```
+    - If the CLI has a documented non-interactive model flag, pass the supplied `--model` string unchanged from `get_command_with_profile()`.
+    - If the CLI has no documented non-interactive model flag, reject explicit models from `ensure_model_supported()` with a clear error. The error should tell users to retry without `--model`.
 
 4. Keep validation at the capability level only:
 

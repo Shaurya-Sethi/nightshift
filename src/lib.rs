@@ -26,5 +26,5 @@ pub mod parser;
 pub mod preflight;
 /// Prompt rendering and directive loading for agent runs.
 pub mod prompt;
-/// Watch Board renderer and offline preview state.
+/// Watch Board renderer, live `--tui` session, and offline preview state.
 pub mod tui;

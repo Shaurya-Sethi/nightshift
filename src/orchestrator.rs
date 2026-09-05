@@ -10,12 +10,14 @@ use crate::console;
 use crate::git::GitOps;
 use crate::github::{GithubIssue, GithubIssues};
 use crate::invocation_profile::{
-    PreflightDimensions, RunEphemeralProfileMap, WholeRunInvocationDefaults, resolve,
+    InvocationProfile, PreflightDimensions, RunEphemeralProfileMap, WholeRunInvocationDefaults,
+    resolve,
 };
-use crate::parser::plan_order;
+use crate::parser::{IssuePlan, plan_order};
 use crate::prompt::{
     DirectivePolicy, directives_for_invocation, render_issue_prompt, save_prompt_copy,
 };
+use crate::tui::{LiveHeader, NullWatch, RosterIssue, Watch, WatchEvent};
 use std::io::IsTerminal;
 
 /// Configuration for one nightshift PRD loop.
@@ -30,6 +32,8 @@ pub struct WorkflowConfig<'a> {
     pub base_branch: &'a str,
     /// When true, print planned-order assignment lines and the first prompt without invoking an agent; requested preflight still runs.
     pub dry_run: bool,
+    /// When true, drive the Watch Board after cooked preflight instead of streaming console banners.
+    pub tui: bool,
     /// Whole-Run Invocation Defaults resolved for every issue without an override.
     pub whole_run_defaults: WholeRunInvocationDefaults<'a>,
     /// Run-Ephemeral Profile Map whose per-issue fields override whole-run defaults.
@@ -53,11 +57,42 @@ pub struct Runtime<'a> {
     pub agent_runner: &'a dyn AgentRunner,
 }
 
+#[cfg(test)]
 fn run_with_preflight_io(
     mut config: WorkflowConfig<'_>,
     runtime: Runtime<'_>,
     preflight_io: Option<&mut crate::preflight::Io<'_>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let prd_body = startup(&mut config, &runtime, preflight_io)?;
+    after_prepare(config, runtime, &prd_body, None)
+}
+
+#[cfg(test)]
+fn run_watched(
+    mut config: WorkflowConfig<'_>,
+    runtime: Runtime<'_>,
+    watch: &dyn Watch,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let prd_body = startup(&mut config, &runtime, None)?;
+    after_prepare(config, runtime, &prd_body, Some(watch))
+}
+
+#[cfg(test)]
+fn run_watched_with_preflight(
+    mut config: WorkflowConfig<'_>,
+    runtime: Runtime<'_>,
+    preflight_io: &mut crate::preflight::Io<'_>,
+    watch: &dyn Watch,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let prd_body = startup(&mut config, &runtime, Some(preflight_io))?;
+    after_prepare(config, runtime, &prd_body, Some(watch))
+}
+
+fn startup(
+    config: &mut WorkflowConfig<'_>,
+    runtime: &Runtime<'_>,
+    mut preflight_io: Option<&mut crate::preflight::Io<'_>>,
+) -> Result<String, Box<dyn std::error::Error>> {
     let default_agent = config.whole_run_defaults.agent;
     let whole_run_profile = resolve(config.whole_run_defaults, None);
     default_agent.get_command_with_profile(whole_run_profile)?;
@@ -91,7 +126,9 @@ fn run_with_preflight_io(
         .fetch_issue_body(config.repo, config.prd)
         .map_err(|err| format!("nightshift: PRD issue {} not found: {}", config.prd, err))?;
 
-    console::session_start(config.prd);
+    if !config.tui {
+        console::session_start(config.prd);
+    }
 
     if preflight_enabled {
         let issues_json = runtime
@@ -99,7 +136,7 @@ fn run_with_preflight_io(
             .fetch_issues(config.repo)
             .map_err(|e| format!("nightshift: failed to fetch issues: {}. Exiting.", e))?;
         let plan = plan_order(&issues_json, config.prd, config.issue)?;
-        let Some(io) = preflight_io else {
+        let Some(io) = preflight_io.as_mut() else {
             return Err("nightshift: Invocation Profile Preflight requires terminal I/O".into());
         };
         config.per_issue_profiles = crate::preflight::pick_profiles(
@@ -111,38 +148,132 @@ fn run_with_preflight_io(
         )?;
     }
 
-    if config.dry_run {
-        return run_dry_run(config, runtime, &prd_body);
+    Ok(prd_body)
+}
+
+fn after_prepare(
+    config: WorkflowConfig<'_>,
+    runtime: Runtime<'_>,
+    prd_body: &str,
+    watch: Option<&dyn Watch>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if config.tui && watch.is_none() {
+        let header = LiveHeader {
+            prd: config.prd,
+            repo: config.repo.to_string(),
+            branch: config.base_branch.to_string(),
+        };
+        let preview =
+            crate::tui::with_live_board(header, |watch| drive(config, runtime, prd_body, watch))?;
+        print_deferred_dry_run(preview);
+        return Ok(());
     }
+    let null = NullWatch;
+    let watch = watch.unwrap_or(&null);
+    let preview = drive(config, runtime, prd_body, watch)?;
+    print_deferred_dry_run(preview);
+    Ok(())
+}
 
+fn drive(
+    config: WorkflowConfig<'_>,
+    runtime: Runtime<'_>,
+    prd_body: &str,
+    watch: &dyn Watch,
+) -> Result<Option<DeferredDryRun>, Box<dyn std::error::Error>> {
+    watch.emit(WatchEvent::Session {
+        prd: config.prd,
+        prd_title: String::new(),
+        repo: config.repo.to_string(),
+        branch: config.base_branch.to_string(),
+    });
+    if config.dry_run {
+        run_dry_run(config, runtime, prd_body, watch)
+    } else {
+        run_loop(config, runtime, prd_body, watch)?;
+        Ok(None)
+    }
+}
+
+fn run_loop(
+    config: WorkflowConfig<'_>,
+    runtime: Runtime<'_>,
+    prd_body: &str,
+    watch: &dyn Watch,
+) -> Result<(), Box<dyn std::error::Error>> {
     loop {
-        console::git_hygiene(config.repo, config.base_branch);
-
+        if !config.tui {
+            console::git_hygiene(config.repo, config.base_branch);
+        }
+        watch.emit(WatchEvent::Hygiene);
         if let Err(e) = runtime.git.ensure_hygiene(config.base_branch) {
-            return Err(format!("nightshift: git hygiene check failed: {}. Exiting.", e).into());
+            return fail(
+                watch,
+                config.prd,
+                format!("nightshift: git hygiene check failed: {}. Exiting.", e),
+            );
+        }
+        if watch.stop_requested() {
+            watch.emit(WatchEvent::Done);
+            break;
         }
 
-        let issues_json = runtime
-            .github
-            .fetch_issues(config.repo)
-            .map_err(|e| format!("nightshift: failed to fetch issues: {}. Exiting.", e))?;
+        let issues_json = match runtime.github.fetch_issues(config.repo) {
+            Ok(json) => json,
+            Err(e) => {
+                return fail(
+                    watch,
+                    config.prd,
+                    format!("nightshift: failed to fetch issues: {}. Exiting.", e),
+                );
+            }
+        };
 
-        let plan = plan_order(&issues_json, config.prd, config.issue)?;
+        let plan = match plan_order(&issues_json, config.prd, config.issue) {
+            Ok(plan) => plan,
+            Err(e) => return fail(watch, config.prd, e.to_string()),
+        };
+        emit_roster(watch, &plan, &config);
+        if watch.stop_requested() {
+            watch.emit(WatchEvent::Done);
+            break;
+        }
+
         let Some(selected_issue) = plan.planned.into_iter().next() else {
             if plan.blocked.is_empty() {
-                complete_without_candidates(config.prd, config.issue, plan.has_open_children);
-            } else {
+                complete_without_candidates(
+                    config.prd,
+                    config.issue,
+                    plan.has_open_children,
+                    config.tui,
+                );
+            } else if !config.tui {
                 console::loop_complete("All remaining issues are blocked");
             }
+            watch.emit(WatchEvent::Done);
             break;
         };
+
+        if watch.stop_requested() {
+            watch.emit(WatchEvent::Done);
+            break;
+        }
 
         let profile = resolve(
             config.whole_run_defaults,
             config.per_issue_profiles.get(&selected_issue.number),
         );
-        let issue_run = console::IssueRun::begin(selected_issue.number, &selected_issue.title);
-        issue_run.invocation_profile(profile);
+        watch.emit(WatchEvent::Dispatch {
+            issue: selected_issue.number,
+        });
+
+        let issue_run = if config.tui {
+            None
+        } else {
+            let run = console::IssueRun::begin(selected_issue.number, &selected_issue.title);
+            run.invocation_profile(profile);
+            Some(run)
+        };
 
         let per_issue = config
             .per_issue_profiles
@@ -151,30 +282,91 @@ fn run_with_preflight_io(
         let directives =
             directives_for_invocation(config.directive_policy, per_issue, profile.agent);
         let final_prompt =
-            render_issue_prompt(config.repo, &prd_body, &selected_issue, directives.as_ref());
+            render_issue_prompt(config.repo, prd_body, &selected_issue, directives.as_ref());
 
-        if let Some(path) = save_prompt_copy(selected_issue.number, &final_prompt) {
-            issue_run.meta(&format!("prompt {}", path.display()));
-        }
-
-        runtime.agent_runner.run(profile, &final_prompt)?;
-
-        if !runtime
-            .github
-            .is_issue_closed(config.repo, selected_issue.number)?
+        if let Some(path) = save_prompt_copy(selected_issue.number, &final_prompt)
+            && let Some(run) = issue_run.as_ref()
         {
-            return Err(format!(
-                "nightshift: agent exited successfully, but issue #{} is still open on GitHub.
-                Exiting.",
-                selected_issue.number
-            )
-            .into());
+            run.meta(&format!("prompt {}", path.display()));
         }
 
-        issue_run.complete();
+        watch.emit(WatchEvent::Running {
+            issue: selected_issue.number,
+        });
+        if let Err(e) = runtime.agent_runner.run(profile, &final_prompt) {
+            return fail(watch, selected_issue.number, e.to_string());
+        }
+
+        watch.emit(WatchEvent::Verify {
+            issue: selected_issue.number,
+        });
+        match runtime
+            .github
+            .is_issue_closed(config.repo, selected_issue.number)
+        {
+            Ok(true) => {}
+            Ok(false) => {
+                return fail(
+                    watch,
+                    selected_issue.number,
+                    format!(
+                        "nightshift: agent exited successfully, but issue #{} is still open on GitHub.\n                Exiting.",
+                        selected_issue.number
+                    ),
+                );
+            }
+            Err(e) => return fail(watch, selected_issue.number, e.to_string()),
+        }
+        watch.emit(WatchEvent::Completed {
+            issue: selected_issue.number,
+        });
+        if let Some(run) = issue_run {
+            run.complete();
+        }
+        if watch.stop_requested() {
+            watch.emit(WatchEvent::Done);
+            break;
+        }
     }
 
     Ok(())
+}
+
+fn fail(watch: &dyn Watch, issue: u32, message: String) -> Result<(), Box<dyn std::error::Error>> {
+    watch.emit(WatchEvent::Failed {
+        issue,
+        message: message.clone(),
+    });
+    Err(message.into())
+}
+
+fn emit_roster(watch: &dyn Watch, plan: &IssuePlan, config: &WorkflowConfig<'_>) {
+    watch.emit(WatchEvent::Roster {
+        planned: plan
+            .planned
+            .iter()
+            .map(|issue| roster_issue(issue, config))
+            .collect(),
+        blocked: plan
+            .blocked
+            .iter()
+            .map(|issue| roster_issue(issue, config))
+            .collect(),
+    });
+}
+
+fn roster_issue(issue: &GithubIssue, config: &WorkflowConfig<'_>) -> RosterIssue {
+    let profile = resolve(
+        config.whole_run_defaults,
+        config.per_issue_profiles.get(&issue.number),
+    );
+    RosterIssue {
+        number: issue.number,
+        title: issue.title.clone(),
+        agent: profile.agent.name().to_string(),
+        model: profile.model.map(str::to_string),
+        effort: profile.reasoning_effort.map(str::to_string),
+    }
 }
 
 /// Runs the PRD child-issue loop until no eligible candidate remains.
@@ -188,7 +380,8 @@ fn run_with_preflight_io(
 ///
 /// When pick flags are set, Invocation Profile Preflight runs after the session
 /// header and before dry-run or the live loop. Git hygiene stays inside those
-/// later phases.
+/// later phases. `--tui` starts the Watch Board only after cooked preflight
+/// releases stdin/stdout locks.
 ///
 /// # Errors
 ///
@@ -217,6 +410,7 @@ fn run_with_preflight_io(
 ///     repo: "owner/repo",
 ///     base_branch: "main",
 ///     dry_run: true,
+///     tui: false,
 ///     whole_run_defaults: WholeRunInvocationDefaults {
 ///         agent: Agent::Cursor,
 ///         model: Some("gpt-5.2"),
@@ -236,20 +430,21 @@ fn run_with_preflight_io(
 /// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
 pub fn run(
-    config: WorkflowConfig<'_>,
+    mut config: WorkflowConfig<'_>,
     runtime: Runtime<'_>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    if !config.preflight_dimensions.requested() {
-        return run_with_preflight_io(config, runtime, None);
-    }
-
-    let stdin = std::io::stdin();
-    let stdout = std::io::stdout();
-    let terminal = stdin.is_terminal() && stdout.is_terminal();
-    let mut input = stdin.lock();
-    let mut output = stdout.lock();
-    let mut io = crate::preflight::Io::new(terminal, &mut input, &mut output);
-    run_with_preflight_io(config, runtime, Some(&mut io))
+    let prd_body = if !config.preflight_dimensions.requested() {
+        startup(&mut config, &runtime, None)?
+    } else {
+        let stdin = std::io::stdin();
+        let stdout = std::io::stdout();
+        let terminal = stdin.is_terminal() && stdout.is_terminal();
+        let mut input = stdin.lock();
+        let mut output = stdout.lock();
+        let mut io = crate::preflight::Io::new(terminal, &mut input, &mut output);
+        startup(&mut config, &runtime, Some(&mut io))?
+    };
+    after_prepare(config, runtime, &prd_body, None)
 }
 
 type DryRunPreview<'a> = (
@@ -292,16 +487,70 @@ fn build_dry_run_preview<'a>(
     Ok((assignments, format!("{cmd_name} {}", cmd_args.join(" "))))
 }
 
+struct DeferredAssignment {
+    number: u32,
+    title: String,
+    agent: crate::agent::Agent,
+    model: Option<String>,
+    effort: Option<String>,
+}
+
+struct DeferredDryRun {
+    planned: Vec<DeferredAssignment>,
+    blocked: Vec<(u32, String)>,
+    agent_cmd: String,
+    prompt: Option<String>,
+}
+
+fn print_deferred_dry_run(preview: Option<DeferredDryRun>) {
+    let Some(preview) = preview else {
+        return;
+    };
+    let planned: Vec<(u32, &str, InvocationProfile<'_>)> = preview
+        .planned
+        .iter()
+        .map(|row| {
+            (
+                row.number,
+                row.title.as_str(),
+                InvocationProfile {
+                    agent: row.agent,
+                    model: row.model.as_deref(),
+                    reasoning_effort: row.effort.as_deref(),
+                },
+            )
+        })
+        .collect();
+    let blocked: Vec<(u32, &str)> = preview
+        .blocked
+        .iter()
+        .map(|(number, title)| (*number, title.as_str()))
+        .collect();
+    console::dry_run_planned_order(&planned, &blocked, &preview.agent_cmd);
+    if let Some(prompt) = &preview.prompt {
+        console::dry_run_prompt(prompt);
+    }
+}
+
 /// Runs a dry-run pass: planned order, agent command preview, and first-issue prompt.
 fn run_dry_run(
     config: WorkflowConfig<'_>,
     runtime: Runtime<'_>,
     prd_body: &str,
-) -> Result<(), Box<dyn std::error::Error>> {
-    console::git_hygiene(config.repo, config.base_branch);
+    watch: &dyn Watch,
+) -> Result<Option<DeferredDryRun>, Box<dyn std::error::Error>> {
+    if !config.tui {
+        console::git_hygiene(config.repo, config.base_branch);
+    }
+    watch.emit(WatchEvent::Hygiene);
 
     if let Err(e) = runtime.git.ensure_hygiene(config.base_branch) {
-        return Err(format!("nightshift: git hygiene check failed: {}. Exiting.", e).into());
+        let message = format!("nightshift: git hygiene check failed: {}. Exiting.", e);
+        watch.emit(WatchEvent::Failed {
+            issue: config.prd,
+            message: message.clone(),
+        });
+        return Err(message.into());
     }
 
     let issues_json = runtime
@@ -310,10 +559,12 @@ fn run_dry_run(
         .map_err(|e| format!("nightshift: failed to fetch issues: {}. Exiting.", e))?;
 
     let plan = plan_order(&issues_json, config.prd, config.issue)?;
+    emit_roster(watch, &plan, &config);
 
     if plan.planned.is_empty() && plan.blocked.is_empty() {
-        complete_without_candidates(config.prd, config.issue, plan.has_open_children);
-        return Ok(());
+        complete_without_candidates(config.prd, config.issue, plan.has_open_children, config.tui);
+        watch.emit(WatchEvent::Done);
+        return Ok(None);
     }
 
     let (planned, agent_cmd) = build_dry_run_preview(
@@ -321,14 +572,13 @@ fn run_dry_run(
         config.whole_run_defaults,
         &config.per_issue_profiles,
     )?;
-    let blocked: Vec<_> = plan
+    let blocked: Vec<(u32, String)> = plan
         .blocked
         .iter()
-        .map(|issue| (issue.number, issue.title.as_str()))
+        .map(|issue| (issue.number, issue.title.clone()))
         .collect();
-    console::dry_run_planned_order(&planned, &blocked, &agent_cmd);
 
-    if let Some(first) = plan.planned.first() {
+    let prompt = if let Some(first) = plan.planned.first() {
         let profile = resolve(
             config.whole_run_defaults,
             config.per_issue_profiles.get(&first.number),
@@ -342,13 +592,46 @@ fn run_dry_run(
         let final_prompt = render_issue_prompt(config.repo, prd_body, first, directives.as_ref());
         #[cfg(test)]
         LAST_RENDERED_PROMPT.with(|slot| *slot.borrow_mut() = Some(final_prompt.clone()));
-        console::dry_run_prompt(&final_prompt);
-    }
+        Some(final_prompt)
+    } else {
+        None
+    };
 
-    Ok(())
+    watch.emit(WatchEvent::Done);
+
+    if config.tui {
+        Ok(Some(DeferredDryRun {
+            planned: planned
+                .iter()
+                .map(|(number, title, profile)| DeferredAssignment {
+                    number: *number,
+                    title: (*title).to_string(),
+                    agent: profile.agent,
+                    model: profile.model.map(str::to_string),
+                    effort: profile.reasoning_effort.map(str::to_string),
+                })
+                .collect(),
+            blocked,
+            agent_cmd,
+            prompt,
+        }))
+    } else {
+        let blocked_refs: Vec<(u32, &str)> = blocked
+            .iter()
+            .map(|(number, title)| (*number, title.as_str()))
+            .collect();
+        console::dry_run_planned_order(&planned, &blocked_refs, &agent_cmd);
+        if let Some(prompt) = &prompt {
+            console::dry_run_prompt(prompt);
+        }
+        Ok(None)
+    }
 }
 
-fn complete_without_candidates(prd: u32, min_issue: u32, has_open_children: bool) {
+fn complete_without_candidates(prd: u32, min_issue: u32, has_open_children: bool, tui: bool) {
+    if tui {
+        return;
+    }
     if has_open_children {
         console::loop_complete(&format!(
             "No candidates from issue #{}; open issues remain below threshold",
@@ -432,6 +715,7 @@ mod tests {
             repo: "foobar/repo",
             base_branch: "main",
             dry_run,
+            tui: false,
             whole_run_defaults,
             per_issue_profiles,
             preflight_dimensions,
@@ -1286,5 +1570,349 @@ mod tests {
             .to_string();
         assert!(error.contains("Invocation Profile Preflight requires terminal I/O"));
         assert_no_github_calls(&github);
+    }
+
+    fn tui_config<'a>(
+        dry_run: bool,
+        whole_run_defaults: WholeRunInvocationDefaults<'a>,
+        per_issue_profiles: RunEphemeralProfileMap,
+        preflight_dimensions: PreflightDimensions,
+        directive_policy: DirectivePolicy<'a>,
+    ) -> WorkflowConfig<'a> {
+        let mut config = workflow(
+            1,
+            dry_run,
+            whole_run_defaults,
+            per_issue_profiles,
+            preflight_dimensions,
+            directive_policy,
+        );
+        config.tui = true;
+        config
+    }
+
+    fn events_contain(watch: &crate::tui::WatchLog, check: impl Fn(&WatchEvent) -> bool) -> bool {
+        watch.events().iter().any(check)
+    }
+
+    struct StoppingGit<'a> {
+        watch: &'a crate::tui::WatchLog,
+    }
+
+    impl GitOps for StoppingGit<'_> {
+        fn base_branch_exists(&self, _base_branch: &str) -> bool {
+            true
+        }
+
+        fn ensure_hygiene(&self, _base_branch: &str) -> Result<(), Box<dyn std::error::Error>> {
+            self.watch.request_stop();
+            Ok(())
+        }
+    }
+
+    struct StoppingFetchGithub<'a> {
+        inner: MockGithub,
+        watch: &'a crate::tui::WatchLog,
+    }
+
+    impl GithubIssues for StoppingFetchGithub<'_> {
+        fn resolve_repo(&self, repo: Option<&str>) -> Result<String, Box<dyn std::error::Error>> {
+            self.inner.resolve_repo(repo)
+        }
+
+        fn fetch_issues(&self, repo: &str) -> Result<String, Box<dyn std::error::Error>> {
+            let json = self.inner.fetch_issues(repo)?;
+            self.watch.request_stop();
+            Ok(json)
+        }
+
+        fn fetch_issue_body(
+            &self,
+            repo: &str,
+            issue_number: u32,
+        ) -> Result<String, Box<dyn std::error::Error>> {
+            self.inner.fetch_issue_body(repo, issue_number)
+        }
+
+        fn is_issue_closed(
+            &self,
+            repo: &str,
+            issue_number: u32,
+        ) -> Result<bool, Box<dyn std::error::Error>> {
+            self.inner.is_issue_closed(repo, issue_number)
+        }
+    }
+
+    struct StopAfterCurrent<'a> {
+        closer: RecordingCloser<'a>,
+        watch: &'a crate::tui::WatchLog,
+    }
+
+    impl AgentRunner for StopAfterCurrent<'_> {
+        fn run(
+            &self,
+            profile: InvocationProfile<'_>,
+            prompt: &str,
+        ) -> Result<(), Box<dyn std::error::Error>> {
+            self.watch.request_stop();
+            self.closer.run(profile, prompt)
+        }
+    }
+
+    #[test]
+    fn still_open_after_agent_is_failed_not_completed() {
+        let github = mock_github(
+            graph(&[child(10, 42, &[])]),
+            HashMap::from([(42, "Product requirements".into())]),
+        );
+        let agent = idle_agent();
+        let watch = crate::tui::WatchLog::new();
+        let config = tui_config(
+            false,
+            defaults(Agent::Pi, None, None),
+            RunEphemeralProfileMap::new(),
+            PreflightDimensions::default(),
+            DirectivePolicy::Replace("test directives"),
+        );
+        let error = run_watched(config, runtime(&github, &agent), &watch)
+            .expect_err("open issue after agent must fail")
+            .to_string();
+        assert!(error.contains("still open"));
+        assert!(agent.ran.get());
+        assert!(events_contain(&watch, |event| {
+            matches!(event, WatchEvent::Failed { issue: 10, .. })
+        }));
+        assert!(!events_contain(&watch, |event| {
+            matches!(event, WatchEvent::Completed { issue: 10 })
+        }));
+    }
+
+    #[test]
+    fn github_closed_issue_is_the_only_completed_signal() {
+        let github = mock_github(
+            graph(&[child(10, 42, &[]), child(11, 42, &[])]),
+            HashMap::from([(42, "Product requirements".into())]),
+        );
+        let agent = recording_closer(&github.closed);
+        let watch = crate::tui::WatchLog::new();
+        let config = tui_config(
+            false,
+            defaults(Agent::Pi, None, None),
+            RunEphemeralProfileMap::new(),
+            PreflightDimensions::default(),
+            DirectivePolicy::Replace("test directives"),
+        );
+        run_watched(config, runtime(&github, &agent), &watch).unwrap();
+        let events = watch.events();
+        assert!(
+            events
+                .iter()
+                .any(|event| { matches!(event, WatchEvent::Hygiene) })
+        );
+        assert!(
+            events
+                .iter()
+                .any(|event| { matches!(event, WatchEvent::Dispatch { issue: 10 }) })
+        );
+        assert!(
+            events
+                .iter()
+                .any(|event| { matches!(event, WatchEvent::Running { issue: 10 }) })
+        );
+        assert!(
+            events
+                .iter()
+                .any(|event| { matches!(event, WatchEvent::Verify { issue: 10 }) })
+        );
+        assert!(
+            events
+                .iter()
+                .any(|event| { matches!(event, WatchEvent::Completed { issue: 10 }) })
+        );
+        assert!(
+            events
+                .iter()
+                .any(|event| { matches!(event, WatchEvent::Completed { issue: 11 }) })
+        );
+        assert!(events.iter().any(|event| matches!(event, WatchEvent::Done)));
+        let completed: Vec<u32> = events
+            .iter()
+            .filter_map(|event| match event {
+                WatchEvent::Completed { issue } => Some(*issue),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(completed, vec![10, 11]);
+    }
+
+    #[test]
+    fn stop_after_hygiene_does_not_dispatch() {
+        let github = prd_github();
+        let agent = idle_agent();
+        let watch = crate::tui::WatchLog::new();
+        let git = StoppingGit { watch: &watch };
+        let config = tui_config(
+            false,
+            defaults(Agent::Pi, None, None),
+            RunEphemeralProfileMap::new(),
+            PreflightDimensions::default(),
+            DirectivePolicy::Replace("test directives"),
+        );
+        let runtime = Runtime {
+            github: &github,
+            git: &git,
+            agent_runner: &agent,
+        };
+        run_watched(config, runtime, &watch).unwrap();
+        assert!(!agent.ran.get());
+        assert!(events_contain(&watch, |event| {
+            matches!(event, WatchEvent::Hygiene)
+        }));
+        assert!(!events_contain(&watch, |event| {
+            matches!(event, WatchEvent::Dispatch { .. })
+        }));
+        assert!(!events_contain(&watch, |event| {
+            matches!(event, WatchEvent::Running { .. })
+        }));
+    }
+
+    #[test]
+    fn stop_after_slow_fetch_does_not_dispatch() {
+        let watch = crate::tui::WatchLog::new();
+        let github = StoppingFetchGithub {
+            inner: prd_github(),
+            watch: &watch,
+        };
+        let agent = idle_agent();
+        let config = tui_config(
+            false,
+            defaults(Agent::Pi, None, None),
+            RunEphemeralProfileMap::new(),
+            PreflightDimensions::default(),
+            DirectivePolicy::Replace("test directives"),
+        );
+        run_watched(config, runtime(&github, &agent), &watch).unwrap();
+        assert!(!agent.ran.get());
+        assert!(events_contain(&watch, |event| {
+            matches!(event, WatchEvent::Roster { .. })
+        }));
+        assert!(!events_contain(&watch, |event| {
+            matches!(event, WatchEvent::Dispatch { .. })
+        }));
+    }
+
+    #[test]
+    fn stop_after_current_issue_does_not_dispatch_the_next() {
+        let github = mock_github(
+            graph(&[child(10, 42, &[]), child(11, 42, &[])]),
+            HashMap::from([(42, "Product requirements".into())]),
+        );
+        let watch = crate::tui::WatchLog::new();
+        let agent = StopAfterCurrent {
+            closer: recording_closer(&github.closed),
+            watch: &watch,
+        };
+        let config = tui_config(
+            false,
+            defaults(Agent::Pi, None, None),
+            RunEphemeralProfileMap::new(),
+            PreflightDimensions::default(),
+            DirectivePolicy::Replace("test directives"),
+        );
+        run_watched(config, runtime(&github, &agent), &watch).unwrap();
+        assert_eq!(agent.closer.agents.borrow().len(), 1);
+        assert!(events_contain(&watch, |event| {
+            matches!(event, WatchEvent::Completed { issue: 10 })
+        }));
+        assert!(!events_contain(&watch, |event| {
+            matches!(event, WatchEvent::Dispatch { issue: 11 })
+        }));
+        assert!(!events_contain(&watch, |event| {
+            matches!(event, WatchEvent::Running { issue: 11 })
+        }));
+        assert!(events_contain(&watch, |event| matches!(
+            event,
+            WatchEvent::Done
+        )));
+    }
+
+    #[test]
+    fn tui_dry_run_emits_plan_and_does_not_spawn() {
+        let github = mock_github(
+            graph(&[child(10, 42, &[]), child(11, 42, &[(10, "OPEN")])]),
+            HashMap::from([(42, "Product requirements".into())]),
+        );
+        let agent = idle_agent();
+        let watch = crate::tui::WatchLog::new();
+        let config = tui_config(
+            true,
+            defaults(Agent::Pi, Some("issue-model"), Some("high")),
+            RunEphemeralProfileMap::new(),
+            PreflightDimensions::default(),
+            DirectivePolicy::Replace("test directives"),
+        );
+        run_watched(config, runtime(&github, &agent), &watch).unwrap();
+        assert!(!agent.ran.get());
+        let events = watch.events();
+        let roster = events
+            .iter()
+            .find_map(|event| match event {
+                WatchEvent::Roster { planned, blocked } => Some((planned, blocked)),
+                _ => None,
+            })
+            .expect("dry-run should emit the plan");
+        assert_eq!(roster.0.len(), 2);
+        assert_eq!(roster.0[0].number, 10);
+        assert_eq!(roster.0[0].agent, "pi");
+        assert_eq!(roster.0[0].model.as_deref(), Some("issue-model"));
+        assert_eq!(roster.0[0].effort.as_deref(), Some("high"));
+        assert!(roster.1.is_empty());
+        assert!(events.iter().any(|event| matches!(event, WatchEvent::Done)));
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, WatchEvent::Running { .. }))
+        );
+    }
+
+    #[test]
+    fn tui_preflight_still_assigns_effort_and_skips_blocked() {
+        let github = mock_github(
+            graph(&[child(10, 42, &[]), child(11, 42, &[(99, "OPEN")])]),
+            HashMap::from([(42, "Product requirements".into())]),
+        );
+        let agent = MockAgent {
+            ran: Cell::new(false),
+            received_model: RefCell::new(None),
+            received_effort: RefCell::new(None),
+            error_on_run: true,
+        };
+        let watch = crate::tui::WatchLog::new();
+        let mut input = Cursor::new(b"5\n\n".as_slice());
+        let mut output = Vec::new();
+        let mut preflight_io = crate::preflight::Io::new(true, &mut input, &mut output);
+        let config = tui_config(
+            false,
+            defaults(Agent::Pi, None, None),
+            RunEphemeralProfileMap::new(),
+            PreflightDimensions {
+                efforts: true,
+                ..PreflightDimensions::default()
+            },
+            DirectivePolicy::Replace("test directives"),
+        );
+
+        let error =
+            run_watched_with_preflight(config, runtime(&github, &agent), &mut preflight_io, &watch)
+                .expect_err("fake agent stops after recording preflight profile")
+                .to_string();
+        assert!(error.contains("mock agent stopped"));
+        assert_eq!(agent.received_effort.borrow().as_deref(), Some("high"));
+        let output = String::from_utf8(output).expect("preflight output is utf-8");
+        assert!(output.contains("#10"));
+        assert!(!output.contains("#11"));
+        assert!(events_contain(&watch, |event| {
+            matches!(event, WatchEvent::Dispatch { issue: 10 })
+        }));
     }
 }

@@ -36,7 +36,6 @@ pub struct Theme {
     completed: Color,
     blocked: Color,
     failed: Color,
-    dim: bool,
 }
 
 impl Theme {
@@ -49,7 +48,6 @@ impl Theme {
             completed: Color::Green,
             blocked: Color::Yellow,
             failed: Color::Red,
-            dim: true,
         }
     }
 
@@ -62,16 +60,19 @@ impl Theme {
             completed: Color::Reset,
             blocked: Color::Reset,
             failed: Color::Reset,
-            dim: true,
         }
     }
 
     /// Native palette unless `NO_COLOR` is set and non-empty.
     pub fn from_env() -> Self {
-        if no_color_set() {
-            Self::no_color()
-        } else {
+        Self::from_no_color_var(std::env::var_os("NO_COLOR").as_deref())
+    }
+
+    fn from_no_color_var(no_color: Option<&std::ffi::OsStr>) -> Self {
+        if no_color.is_none_or(|value| value.is_empty()) {
             Self::native()
+        } else {
+            Self::no_color()
         }
     }
 
@@ -80,11 +81,7 @@ impl Theme {
     }
 
     fn muted(self) -> Style {
-        if self.dim {
-            self.body().add_modifier(Modifier::DIM)
-        } else {
-            self.body()
-        }
+        self.body().add_modifier(Modifier::DIM)
     }
 
     fn bold(self) -> Style {
@@ -113,14 +110,6 @@ impl Theme {
             Phase::Idle | Phase::Hygiene => self.muted(),
         }
     }
-}
-
-fn no_color_set() -> bool {
-    colors_enabled(std::env::var_os("NO_COLOR").as_deref())
-}
-
-fn colors_enabled(no_color: Option<&std::ffi::OsStr>) -> bool {
-    no_color.is_none_or(|value| value.is_empty())
 }
 
 /// Textual issue status. Color is optional decoration, never the only signal.
@@ -608,9 +597,9 @@ fn render_header(
                 Span::styled("nightshift", theme.bold()),
                 Span::raw("  "),
                 Span::styled(format!("PRD #{}", state.prd), theme.live()),
+                Span::styled(format!("  {}  {}", state.repo, state.branch), theme.muted()),
                 Span::raw("  "),
                 Span::raw(state.prd_title.as_str()),
-                Span::styled(format!("  {}  {}", state.repo, state.branch), theme.muted()),
             ]));
             if area.height >= 2 {
                 lines.push(counts_line(state, theme));
@@ -727,12 +716,9 @@ fn detail_lines<'a>(state: &'a BoardState, theme: Theme) -> Vec<Line<'a>> {
     let model = issue.model.as_deref().unwrap_or("agent default");
     let effort = issue.effort.as_deref().unwrap_or("agent default");
     let mut lines = vec![
-        Line::from(Span::styled(issue.title.as_str(), theme.bold())),
-        Line::from(""),
         Line::from(format!("agent   {}", issue.agent)),
         Line::from(format!("model   {model}")),
         Line::from(format!("effort  {effort}")),
-        Line::from(""),
         Line::from(vec![
             Span::raw("phase   "),
             Span::styled(state.phase.label(), theme.phase(&state.phase)),
@@ -741,14 +727,13 @@ fn detail_lines<'a>(state: &'a BoardState, theme: Theme) -> Vec<Line<'a>> {
             "elapsed {}",
             crate::console::format_elapsed(state.elapsed)
         )),
-        Line::from(""),
         Line::from(vec![
             Span::raw("status  "),
             Span::styled(issue.status.as_str(), theme.status(issue.status)),
         ]),
+        Line::from(Span::styled(issue.title.as_str(), theme.bold())),
     ];
     if let Phase::Failed { message, .. } = &state.phase {
-        lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
             message.as_str(),
             theme.status(IssueStatus::Failed),
@@ -776,8 +761,8 @@ fn render_help(frame: &mut Frame, theme: Theme, area: Rect) {
     if is_empty(area) {
         return;
     }
-    let width = 42.min(area.width.saturating_sub(2).max(area.width));
-    let height = 12.min(area.height.saturating_sub(2).max(area.height));
+    let width = 42.min(area.width);
+    let height = 12.min(area.height);
     let help_area = centered(area, width, height);
     frame.render_widget(Clear, help_area);
     let lines = vec![
@@ -888,6 +873,38 @@ mod tests {
     }
 
     #[test]
+    fn compact_board_keeps_repo_phase_profile_and_elapsed_visible() {
+        let state = BoardState::offline_preview();
+        for (width, height) in [(40, 16), (60, 16)] {
+            let text = plain(&draw(&state, &Theme::native(), width, height));
+            assert!(
+                text.contains("offline/preview"),
+                "repo missing at {width}x{height}: {text}"
+            );
+            assert!(
+                text.contains("agent #12"),
+                "phase missing at {width}x{height}: {text}"
+            );
+            assert!(
+                text.contains("1m 15s"),
+                "elapsed missing at {width}x{height}: {text}"
+            );
+            assert!(
+                text.contains("agent   pi"),
+                "agent missing at {width}x{height}: {text}"
+            );
+            assert!(
+                text.contains("model   composer"),
+                "model missing at {width}x{height}: {text}"
+            );
+            assert!(
+                text.contains("effort  high"),
+                "effort missing at {width}x{height}: {text}"
+            );
+        }
+    }
+
+    #[test]
     fn roster_labels_status_in_text() {
         let state = BoardState::offline_preview();
         let text = plain(&draw(&state, &Theme::native(), 100, 24));
@@ -936,9 +953,23 @@ mod tests {
                 assert_eq!(cell.bg, Color::Reset, "bg at {x},{y}");
             }
         }
-        assert!(!colors_enabled(Some(std::ffi::OsStr::new("1"))));
-        assert!(colors_enabled(Some(std::ffi::OsStr::new(""))));
-        assert!(colors_enabled(None));
+    }
+
+    #[test]
+    fn from_env_selects_native_unless_no_color_is_nonempty() {
+        assert_eq!(Theme::from_no_color_var(None), Theme::native());
+        assert_eq!(
+            Theme::from_no_color_var(Some(std::ffi::OsStr::new(""))),
+            Theme::native()
+        );
+        assert_eq!(
+            Theme::from_no_color_var(Some(std::ffi::OsStr::new("1"))),
+            Theme::no_color()
+        );
+        assert_eq!(
+            Theme::from_no_color_var(Some(std::ffi::OsStr::new("0"))),
+            Theme::no_color()
+        );
     }
 
     #[test]

@@ -22,5 +22,7 @@ pub mod invocation_profile;
 pub mod orchestrator;
 /// Next-issue selection from native GitHub relationship JSON.
 pub mod parser;
+/// Interactive per-issue Invocation Profile Preflight.
+pub mod preflight;
 /// Prompt rendering and directive loading for agent runs.
 pub mod prompt;

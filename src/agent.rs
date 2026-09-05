@@ -254,7 +254,6 @@ fn stdin_write_error(write_err: std::io::Error, profile: InvocationProfile<'_>) 
 /// # impl AgentRunner for Recorder {
 /// #     fn run(
 /// #         &self,
-/// #         _agent: Agent,
 /// #         _profile: InvocationProfile<'_>,
 /// #         _prompt: &str,
 /// #     ) -> Result<(), Box<dyn std::error::Error>> {
@@ -263,7 +262,6 @@ fn stdin_write_error(write_err: std::io::Error, profile: InvocationProfile<'_>) 
 /// # }
 /// let runner = Recorder;
 /// runner.run(
-///     Agent::Cursor,
 ///     InvocationProfile {
 ///         agent: Agent::Cursor,
 ///         model: Some("gpt-5.2"),
@@ -274,10 +272,15 @@ fn stdin_write_error(write_err: std::io::Error, profile: InvocationProfile<'_>) 
 /// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
 pub trait AgentRunner {
-    /// Sends `prompt` to `agent` and returns when the agent process completes.
+    /// Sends `prompt` using `profile` and returns when the agent process completes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when command construction fails, the agent process
+    /// cannot be spawned, the prompt cannot be written to stdin, waiting on the
+    /// process fails, or the agent exits unsuccessfully.
     fn run(
         &self,
-        agent: Agent,
         profile: InvocationProfile<'_>,
         prompt: &str,
     ) -> Result<(), Box<dyn std::error::Error>>;
@@ -289,11 +292,10 @@ pub struct ProcessAgentRunner;
 impl AgentRunner for ProcessAgentRunner {
     fn run(
         &self,
-        agent: Agent,
         profile: InvocationProfile<'_>,
         prompt: &str,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let (cmd_name, cmd_args) = agent.get_command_with_profile(profile)?;
+        let (cmd_name, cmd_args) = profile.agent.get_command_with_profile(profile)?;
 
         let mut child = Command::new(cmd_name)
             .args(&cmd_args)

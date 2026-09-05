@@ -83,13 +83,17 @@ fn format_timestamp() -> String {
     format!("unix {secs}")
 }
 
-fn invocation_profile_line(profile: InvocationProfile<'_>) -> String {
+fn profile_fields(profile: InvocationProfile<'_>) -> String {
     format!(
-        "profile  agent {}  model {}  reasoning effort {}",
+        "agent {}  model {}  reasoning effort {}",
         profile.agent.name(),
         profile.model.unwrap_or("agent default"),
         profile.reasoning_effort.unwrap_or("agent default"),
     )
+}
+
+fn invocation_profile_line(profile: InvocationProfile<'_>) -> String {
+    format!("profile  {}", profile_fields(profile))
 }
 
 fn dry_run_assignment_line(
@@ -99,10 +103,8 @@ fn dry_run_assignment_line(
     profile: InvocationProfile<'_>,
 ) -> String {
     format!(
-        "{step}. issue #{number}  {title}  agent {}  model {}  reasoning effort {}",
-        profile.agent.name(),
-        profile.model.unwrap_or("agent default"),
-        profile.reasoning_effort.unwrap_or("agent default"),
+        "{step}. issue #{number}  {title}  {}",
+        profile_fields(profile)
     )
 }
 
@@ -157,7 +159,7 @@ impl IssueRun {
 
 /// Prints the simulated solve order, resolved profile per issue, and command preview for a dry run.
 pub fn dry_run_planned_order(
-    planned: &[(u32, String, InvocationProfile<'_>)],
+    planned: &[(u32, &str, InvocationProfile<'_>)],
     blocked: &[(u32, &str)],
     agent_cmd: &str,
 ) {

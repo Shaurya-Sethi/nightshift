@@ -108,7 +108,6 @@ fn process_runner_passes_reasoning_effort_through_unchanged() {
 
     ProcessAgentRunner
         .run(
-            Agent::Claude,
             InvocationProfile {
                 agent: Agent::Claude,
                 model: Some("claude-sonnet-does-not-exist"),
@@ -147,7 +146,6 @@ fn process_runner_passes_supported_model_through_unchanged() {
 
     ProcessAgentRunner
         .run(
-            Agent::Claude,
             InvocationProfile {
                 agent: Agent::Claude,
                 model: Some("claude-sonnet-does-not-exist"),
@@ -178,7 +176,6 @@ fn process_runner_surfaces_exit_status_and_model_hint() {
 
     let err = ProcessAgentRunner
         .run(
-            Agent::Claude,
             InvocationProfile {
                 agent: Agent::Claude,
                 model: Some("sonnet"),
@@ -202,7 +199,6 @@ fn process_runner_surfaces_exit_status_and_profile_hints() {
 
     let err = ProcessAgentRunner
         .run(
-            Agent::Claude,
             InvocationProfile {
                 agent: Agent::Claude,
                 model: Some("sonnet"),
@@ -227,7 +223,6 @@ fn process_runner_does_not_mask_early_model_rejection_as_stdin_failure() {
 
     let err = ProcessAgentRunner
         .run(
-            Agent::Claude,
             InvocationProfile {
                 agent: Agent::Claude,
                 model: Some("sonnet"),
@@ -252,7 +247,6 @@ fn process_runner_completes_with_silent_noisy_agent() {
 
     ProcessAgentRunner
         .run(
-            Agent::Claude,
             InvocationProfile {
                 agent: Agent::Claude,
                 model: None,

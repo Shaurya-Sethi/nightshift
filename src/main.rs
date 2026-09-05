@@ -42,7 +42,7 @@ fn main() {
     }
 
     let directives = match args.prompt_file.as_deref() {
-        Some(prompt_file) => match load_directives(Some(prompt_file), args.agent) {
+        Some(prompt_file) => match load_directives(prompt_file) {
             Ok(directives) => directives,
             Err(e) => {
                 eprintln!("{}", e);

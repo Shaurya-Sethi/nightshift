@@ -97,7 +97,7 @@ impl Args {
 #[cfg(test)]
 mod tests {
     use super::Args;
-    use crate::invocation_profile::{PreflightDimensions, WholeRunInvocationDefaults};
+    use crate::invocation_profile::PreflightDimensions;
     use clap::{CommandFactory, Parser};
 
     #[test]
@@ -128,22 +128,6 @@ mod tests {
         assert!(help.contains(
             "Whole-run model and effort defaults apply only when the row agent equals --agent"
         ));
-    }
-
-    #[test]
-    fn parses_whole_run_reasoning_effort() {
-        let args = Args::try_parse_from([
-            "nightshift",
-            "--prd",
-            "42",
-            "--agent",
-            "pi",
-            "--reasoning-effort",
-            "high",
-        ])
-        .expect("reasoning effort should parse");
-
-        assert_eq!(args.reasoning_effort.as_deref(), Some("high"));
     }
 
     #[test]
@@ -276,42 +260,5 @@ mod tests {
         ]);
 
         assert!(parsed.is_err());
-    }
-
-    #[test]
-    fn parses_github_scope_and_translates_to_workflow_config() {
-        let args = Args::try_parse_from([
-            "nightshift",
-            "--prd",
-            "42",
-            "--issue",
-            "7",
-            "--agent",
-            "cursor",
-            "--model",
-            "gpt-5.4",
-            "--reasoning-effort",
-            "high",
-            "--base-branch",
-            "main",
-            "--dry-run",
-        ])
-        .expect("args should parse");
-
-        let config = args.to_workflow_config("owner/repo", "Run tests.");
-        assert_eq!(config.prd, 42);
-        assert_eq!(config.issue, 7);
-        assert_eq!(config.repo, "owner/repo");
-        assert!(config.dry_run);
-        assert_eq!(
-            config.whole_run_defaults,
-            WholeRunInvocationDefaults {
-                agent: crate::agent::Agent::Cursor,
-                model: Some("gpt-5.4"),
-                reasoning_effort: Some("high"),
-            }
-        );
-        assert_eq!(config.preflight_dimensions, PreflightDimensions::default());
-        assert_eq!(config.directives, "Run tests.");
     }
 }

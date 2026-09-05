@@ -150,9 +150,7 @@ fn run_with_preflight_io(
             issue_run.meta(&format!("prompt {}", path.display()));
         }
 
-        runtime
-            .agent_runner
-            .run(profile.agent, profile, &final_prompt)?;
+        runtime.agent_runner.run(profile, &final_prompt)?;
 
         if !runtime
             .github
@@ -249,12 +247,14 @@ pub fn run(
     run_with_preflight_io(config, runtime, Some(&mut io))
 }
 
-type DryRunAssignment<'a> = (
-    u32,
+type DryRunPreview<'a> = (
+    Vec<(
+        u32,
+        &'a str,
+        crate::invocation_profile::InvocationProfile<'a>,
+    )>,
     String,
-    crate::invocation_profile::InvocationProfile<'a>,
 );
-type DryRunPreview<'a> = (Vec<DryRunAssignment<'a>>, String);
 
 /// Builds resolved dry-run assignments and first-issue command preview.
 ///
@@ -262,7 +262,7 @@ type DryRunPreview<'a> = (Vec<DryRunAssignment<'a>>, String);
 /// uses the first assignment because the dry run previews the loop's next
 /// agent invocation.
 fn build_dry_run_preview<'a>(
-    planned: &[GithubIssue],
+    planned: &'a [GithubIssue],
     defaults: WholeRunInvocationDefaults<'a>,
     profiles: &'a RunEphemeralProfileMap,
 ) -> Result<DryRunPreview<'a>, String> {
@@ -271,7 +271,7 @@ fn build_dry_run_preview<'a>(
         .map(|issue| {
             (
                 issue.number,
-                issue.title.clone(),
+                issue.title.as_str(),
                 resolve(defaults, profiles.get(&issue.number)),
             )
         })
@@ -563,43 +563,25 @@ mod tests {
     struct MockAgent {
         ran: Cell<bool>,
         received_model: RefCell<Option<String>>,
+        received_effort: RefCell<Option<String>>,
         error_on_run: bool,
     }
 
     impl AgentRunner for MockAgent {
         fn run(
             &self,
-            _agent: Agent,
             profile: InvocationProfile<'_>,
             _prompt: &str,
         ) -> Result<(), Box<dyn std::error::Error>> {
             self.ran.set(true);
-            if let Some(model) = profile.model {
-                self.received_model.replace(Some(model.to_string()));
-            }
+            self.received_model
+                .replace(profile.model.map(str::to_string));
+            self.received_effort
+                .replace(profile.reasoning_effort.map(str::to_string));
             if self.error_on_run {
                 return Err("mock agent stopped after recording run".into());
             }
             Ok(())
-        }
-    }
-
-    struct ProfileRecordingAgent {
-        received_profile: RefCell<Option<(Option<String>, Option<String>)>>,
-    }
-
-    impl AgentRunner for ProfileRecordingAgent {
-        fn run(
-            &self,
-            _agent: Agent,
-            profile: InvocationProfile<'_>,
-            _prompt: &str,
-        ) -> Result<(), Box<dyn std::error::Error>> {
-            self.received_profile.replace(Some((
-                profile.model.map(str::to_string),
-                profile.reasoning_effort.map(str::to_string),
-            )));
-            Err("mock agent stopped after recording profile".into())
         }
     }
 
@@ -616,6 +598,7 @@ mod tests {
         MockAgent {
             ran: Cell::new(false),
             received_model: RefCell::new(None),
+            received_effort: RefCell::new(None),
             error_on_run: false,
         }
     }
@@ -741,6 +724,7 @@ mod tests {
         let agent = MockAgent {
             ran: Cell::new(false),
             received_model: RefCell::new(None),
+            received_effort: RefCell::new(None),
             error_on_run: true,
         };
         let config = workflow(
@@ -764,8 +748,11 @@ mod tests {
             bodies: HashMap::from([(42, "Product requirements".into())]),
             closed: HashSet::new(),
         };
-        let agent = ProfileRecordingAgent {
-            received_profile: RefCell::new(None),
+        let agent = MockAgent {
+            ran: Cell::new(false),
+            received_model: RefCell::new(None),
+            received_effort: RefCell::new(None),
+            error_on_run: true,
         };
         let profiles = RunEphemeralProfileMap::from([(
             10,
@@ -787,11 +774,12 @@ mod tests {
         let error = run(config, runtime(&github, &agent))
             .expect_err("fake agent stops after recording resolved profile")
             .to_string();
-        assert!(error.contains("mock agent stopped after recording profile"));
+        assert!(error.contains("mock agent stopped"));
         assert_eq!(
-            *agent.received_profile.borrow(),
-            Some((Some("issue-model".to_string()), Some("medium".to_string())))
+            agent.received_model.borrow().as_deref(),
+            Some("issue-model")
         );
+        assert_eq!(agent.received_effort.borrow().as_deref(), Some("medium"));
     }
 
     #[test]
@@ -801,8 +789,11 @@ mod tests {
             bodies: HashMap::from([(42, "Product requirements".into())]),
             closed: HashSet::new(),
         };
-        let agent = ProfileRecordingAgent {
-            received_profile: RefCell::new(None),
+        let agent = MockAgent {
+            ran: Cell::new(false),
+            received_model: RefCell::new(None),
+            received_effort: RefCell::new(None),
+            error_on_run: true,
         };
         let profiles = RunEphemeralProfileMap::from([(
             11,
@@ -824,11 +815,9 @@ mod tests {
         let error = run(config, runtime(&github, &agent))
             .expect_err("fake agent stops after recording defaults")
             .to_string();
-        assert!(error.contains("mock agent stopped after recording profile"));
-        assert_eq!(
-            *agent.received_profile.borrow(),
-            Some((Some("run-model".to_string()), Some("medium".to_string())))
-        );
+        assert!(error.contains("mock agent stopped"));
+        assert_eq!(agent.received_model.borrow().as_deref(), Some("run-model"));
+        assert_eq!(agent.received_effort.borrow().as_deref(), Some("medium"));
     }
 
     #[test]
@@ -842,7 +831,6 @@ mod tests {
         impl AgentRunner for RecordingCloser<'_> {
             fn run(
                 &self,
-                _agent: Agent,
                 profile: InvocationProfile<'_>,
                 _prompt: &str,
             ) -> Result<(), Box<dyn std::error::Error>> {
@@ -1094,11 +1082,10 @@ mod tests {
         impl AgentRunner for RecordingCloser<'_> {
             fn run(
                 &self,
-                agent: Agent,
-                _profile: InvocationProfile<'_>,
+                profile: InvocationProfile<'_>,
                 prompt: &str,
             ) -> Result<(), Box<dyn std::error::Error>> {
-                self.agents.borrow_mut().push(agent);
+                self.agents.borrow_mut().push(profile.agent);
                 self.prompts.borrow_mut().push(prompt.to_string());
                 let number = self.next_close.get();
                 self.closed.borrow_mut().insert(number);
@@ -1156,8 +1143,11 @@ mod tests {
             bodies: HashMap::from([(42, "Product requirements".into())]),
             closed: HashSet::new(),
         };
-        let agent = ProfileRecordingAgent {
-            received_profile: RefCell::new(None),
+        let agent = MockAgent {
+            ran: Cell::new(false),
+            received_model: RefCell::new(None),
+            received_effort: RefCell::new(None),
+            error_on_run: true,
         };
         let mut input = Cursor::new(b"5\n\n".as_slice());
         let mut output = Vec::new();
@@ -1179,11 +1169,9 @@ mod tests {
             run_with_preflight_io(config, runtime(&github, &agent), Some(&mut preflight_io))
                 .expect_err("fake agent stops after recording preflight profile")
                 .to_string();
-        assert!(error.contains("mock agent stopped after recording profile"));
-        assert_eq!(
-            *agent.received_profile.borrow(),
-            Some((None, Some("high".to_string())))
-        );
+        assert!(error.contains("mock agent stopped"));
+        assert_eq!(agent.received_model.borrow().as_deref(), None);
+        assert_eq!(agent.received_effort.borrow().as_deref(), Some("high"));
         let output = String::from_utf8(output).expect("preflight output is utf-8");
         assert!(output.contains("#10"));
         assert!(!output.contains("#11"));

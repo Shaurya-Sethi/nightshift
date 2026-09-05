@@ -61,27 +61,23 @@ pub fn directives_for_invocation<'a>(directives: &'a str, agent: Agent) -> Cow<'
     }
 }
 
-/// Loads maintainer directives from a file or falls back to [`default_directives_for`].
+/// Loads maintainer directives from a file.
 ///
 /// File contents are trimmed before being appended to the rendered issue prompt.
-/// A supplied file always overrides agent-specific built-in directives.
+/// A supplied file overrides agent-specific built-in directives for every issue.
 ///
 /// # Errors
 ///
-/// Returns a user-facing error string when a requested prompt file cannot be
-/// read.
-pub fn load_directives(prompt_file: Option<&Path>, agent: Agent) -> Result<String, String> {
-    match prompt_file {
-        Some(prompt_file) => std::fs::read_to_string(prompt_file)
-            .map(|prompt| prompt.trim().to_string())
-            .map_err(|_| {
-                format!(
-                    "nightshift: failed to read prompt file: {}",
-                    prompt_file.display()
-                )
-            }),
-        None => Ok(default_directives_for(agent)),
-    }
+/// Returns a user-facing error string when the prompt file cannot be read.
+pub fn load_directives(prompt_file: &Path) -> Result<String, String> {
+    std::fs::read_to_string(prompt_file)
+        .map(|prompt| prompt.trim().to_string())
+        .map_err(|_| {
+            format!(
+                "nightshift: failed to read prompt file: {}",
+                prompt_file.display()
+            )
+        })
 }
 
 /// Renders the prompt sent to the coding agent for one selected issue.

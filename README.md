@@ -7,7 +7,7 @@ Go to sleep with a backlog and wake up with merged PRs.
 nightshift autonomously works through your GitHub issues while you are afk. Point it at a PRD, pick your [favourite coding agent](#supported-agents), and it handles the rest: branch, implement, PR, merge, repeat. It stops when every child issue is done. Inspired by the [Ralph Wiggum](https://ghuntley.com/loop/) loop pattern.
 
 > [!WARNING]
-> **nightshift selects work from native GitHub relationships, not issue-body text.** Child issues must be sub-issues of the PRD (`gh issue create --parent`), declare dependencies with `--blocked-by`, and carry the `ready-for-agent` label. Bodies are not parsed for membership or ordering.
+> **nightshift selects work from native GitHub relationships, not issue-body text.** Child issues must be sub-issues of the PRD (`gh issue create --parent`), declare dependencies with `--blocked-by`, and carry the `ready-for-agent` label. Bodies are not parsed for membership or ordering. The bundled [skills](#skills) produce exactly this shape.
 
 ## Prerequisites
 
@@ -75,6 +75,41 @@ For the selected issue, nightshift constructs a unified prompt and pipes it to t
 After the agent exits, nightshift checks that the issue is actually closed on GitHub. If it is, the loop continues from step one. If not, nightshift stops and tells you; the agent may have exited cleanly but left the issue open, which usually means something needs your attention.
 
 Use `--dry-run` to see which issue would be selected and what the prompt looks like, without invoking an agent.
+
+## Skills
+
+Writing sub-issues and blocked-by links by hand is tedious, so nightshift ships two agent skills under [`skills/`](skills/) that do it for you:
+
+- **`to-nightshift-prd`**: turns the current conversation into a PRD (problem, solution, user stories, implementation and testing decisions) and publishes it as a GitHub issue.
+- **`to-nightshift-issues`**: breaks a PRD into tracer-bullet vertical slices and publishes each as a sub-issue of the PRD via `gh issue create --parent`, with `--blocked-by` links and the `ready-for-agent` label (or `ready-for-human` for slices that need a person). It creates the labels if they are missing.
+
+The intended flow is `to-nightshift-prd` → `to-nightshift-issues` → `nightshift --dry-run` to check the order → `nightshift`. Both skills need an authenticated `gh` (see [Prerequisites](#prerequisites)) and publish to the repository `gh` detects from your working directory.
+
+### Installing
+
+Copy the skill folders into wherever your agent discovers skills, in the repository you want issues for:
+
+```bash
+cp -r /path/to/nightshift/skills/* .claude/skills/   # Claude Code (project)
+cp -r /path/to/nightshift/skills/* .agents/skills/   # Codex and other agents
+cp -r /path/to/nightshift/skills/* ~/.claude/skills/ # Claude Code (all projects)
+```
+
+Then invoke them by name in your agent, e.g. `/to-nightshift-prd` in Claude Code.
+
+### Running the skills non-interactively
+
+The skills also work without a chat session. With [Pi](https://pi.dev/) for example, load the skill explicitly and tell the agent to proceed without asking questions:
+
+```bash
+pi -p --no-session --skill /path/to/nightshift/skills/to-nightshift-prd \
+  --append-system-prompt "Non-interactive run: treat every 'check with the user' step as approved." \
+  "Use the to-nightshift-prd skill. Feature: <describe the feature>. Publish the PRD."
+
+pi -p --no-session --skill /path/to/nightshift/skills/to-nightshift-issues \
+  --append-system-prompt "Non-interactive run: treat the breakdown as approved and publish." \
+  "Use the to-nightshift-issues skill to break down PRD #<n>."
+```
 
 ## Keeping Your System Awake
 

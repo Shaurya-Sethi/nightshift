@@ -43,25 +43,44 @@ nightshift --prd 12 --agent claude --model claude-sonnet-4-6
 | `--issue`             |          | `0`                       | Skip issues below this number (useful when resuming)                                                 |
 | `--repo`              |          | detected from `gh`        | Repository as `owner/name`                                                                           |
 | `--base-branch`       |          | `main`                    | Branch to sync to before each issue                                                                  |
-| `--prompt-file`       |          | built-in guidelines       | File with extra instructions for your agent                                                          |
+| `--prompt-file`       |          | built-in guidelines       | File that overrides built-in directives for every issue                                              |
 | `--dry-run`           |          | `false`                   | Show planned order and first prompt without starting an agent; requested preflight still runs        |
 
+### Invocation profiles
+
+An **Invocation Profile** is agent plus model plus reasoning effort for one invocation. `--agent` remains required as whole-run default. Start with defaults, then add optional composable Preflight Dimensions:
+
+1. **Whole-run defaults:** pass `--agent` with optional `--model` and `--reasoning-effort`. Every invocation uses supplied fields; omitted fields remain agent defaults.
+2. **Agent dimension:** pass `--pick-agents`. Pick one full nightshift-compatible agent per member of the simulated solvable plan; Enter keeps `--agent` for that row. Agent choice is in-memory for this run only.
+3. **Effort dimension:** pass `--pick-efforts` with optional whole-run defaults. Pick one effort key for each member of the simulated solvable plan; model remains fixed from `--model` or agent default.
+4. **Model dimension:** pass `--pick-models` with optional whole-run defaults. Enter a free-string model and choose effort where supported for each planned issue.
+
+`--pick-efforts` and `--pick-models` are mutually exclusive. `--pick-agents` stacks with either: `--pick-agents --pick-efforts` collects agent then effort; `--pick-agents --pick-models` collects agent then model then effort. Agent picker prints one numbered legend for all compatible agents; it never probes `PATH`. In every picker, Enter leaves field blank. A blank agent keeps `--agent`; blank model or effort cascades to whole-run default and then agent default. When an Agent Preflight row chooses another agent, whole-run `--model` and `--reasoning-effort` do not cross that boundary: that agent uses its own defaults. This is **Same-Agent Defaults Inheritance**.
+
+Picker is one in-memory batch before the loop, covering the **Simulated Solvable Set** (planned issues, including those blocked only by another planned issue). Press `q` or Ctrl-C to abort; no partial selection starts a run. Built-in directives follow the resolved agent; one `--prompt-file` overrides them for every issue. Pick modes need a TTY (else fail fast to whole-run `--agent`, `--model`, and `--reasoning-effort`). Without `--pick-agents`, `--pick-efforts` is only for `pi`, `claude`, and `codex`; Cursor `--pick-models` is model-only; Antigravity supports neither. With `--pick-agents`, each row skips unsupported knobs (Cursor: no separate effort; Antigravity: no model or effort).
+
+`--dry-run` does not skip a requested picker: complete preflight first, then nightshift prints every planned issue with resolved agent, model, and effort, first issue's prompt, and its would-invoke command. No agent process starts. Without a picker, dry-run resolves rows from whole-run defaults and agent defaults.
 
 ## Supported Agents
 
 nightshift hands your agent a single prompt per issue. These agents work out of the box:
 
 
-| `--agent` value | Command run | `--model` support | Project                                                                                      |
-| --------------- | ----------- | ----------------- | -------------------------------------------------------------------------------------------- |
-| `claude`        | `claude`    | yes               | [Anthropic Claude Code](https://docs.anthropic.com/en/docs/claude-code)                      |
-| `codex`         | `codex`     | yes               | [OpenAI Codex CLI](https://github.com/openai/codex)                                          |
-| `antigravity`   | `agy`       | no                | [Google Antigravity CLI](https://antigravity.google/blog/introducing-google-antigravity-cli) |
-| `cursor`        | `agent`     | yes               | [Cursor](https://cursor.com/cli)                                                             |
-| `pi`            | `pi`        | yes               | [Pi](https://pi.dev/)                                                                        |
+| `--agent` value | Command run | Nightshift `--model` | Nightshift reasoning effort | Project |
+| --------------- | ----------- | -------------------- | --------------------------- | ------- |
+| `claude`        | `claude`    | yes                  | `--effort`: `low`, `medium`, `high`, `max` | [Anthropic Claude Code](https://docs.anthropic.com/en/docs/claude-code) |
+| `codex`         | `codex`     | yes                  | `-c model_reasoning_effort=…`: `minimal`, `low`, `medium`, `high`, `xhigh` | [OpenAI Codex CLI](https://github.com/openai/codex) |
+| `antigravity`   | `agy`       | no                   | no; explicit model or effort fails fast | [Google Antigravity CLI](https://antigravity.google/blog/introducing-google-antigravity-cli) |
+| `cursor`        | `agent`     | yes                  | **Model-Encoded Effort**; no separate effort flag | [Cursor](https://cursor.com/cli) |
+| `pi`            | `pi`        | yes                  | `--thinking`: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max` | [Pi](https://pi.dev/) |
 
 
-When `--model` is omitted, nightshift lets the selected agent use its persisted default model. When `--model` is provided, nightshift passes it through unchanged for agents with a documented non-interactive model flag. If an agent does not support that flag, nightshift fails fast and tells you to retry without `--model`.
+> [!IMPORTANT]
+> **Cursor uses Model-Encoded Effort.** Use `--model` or Cursor's model-only `--pick-models` preflight to choose a model slug that already represents the desired effort. nightshift never adds `--reasoning-effort`, rewrites Cursor model strings, or injects effort syntax into a model value. Cursor is invoked as `agent`, not `cursor-agent`.
+
+When `--model` is omitted, nightshift lets the selected agent use its persisted default model. When it is provided, nightshift passes it through unchanged for agents with a documented non-interactive model flag. If an agent does not support that flag, nightshift fails fast and tells you to retry without `--model`.
+
+nightshift validates at the **capability level** only: whether the selected agent supports model or effort selection, and whether an effort is in nightshift's documented agent-native set. It does not scrape model catalogs, validate model names, rewrite model slugs, or enforce model-specific effort matrices. The selected agent remains responsible for accepting a model and any model-specific effort subset.
 
 To add support for a new agent, see [CONTRIBUTING.md](CONTRIBUTING.md).
 
@@ -78,22 +97,21 @@ For the selected issue, nightshift constructs a unified prompt and pipes it to t
 
 After the agent exits, nightshift checks that the issue is actually closed on GitHub. If it is, the loop continues from step one. If not, nightshift stops and tells you; the agent may have exited cleanly but left the issue open, which usually means something needs your attention.
 
-Use `--dry-run` to see the planned issue order with resolved agent, model, and reasoning effort per row, plus the first prompt, without invoking an agent. Example assignment line:
+Example assignment line:
 
 ```text
 1. issue #10  Child 10  agent pi  model issue-model  reasoning effort high
 ```
 
-Requested `--pick-agents` / `--pick-efforts` / `--pick-models` still run before that preview.
-
 ## Skills
 
-Writing sub-issues and blocked-by links by hand is tedious, so nightshift ships two agent skills under [`skills/`](skills/) that do it for you:
+Writing sub-issues and blocked-by links by hand is tedious, so nightshift ships three agent skills under [`skills/`](skills/):
 
 - **`to-nightshift-prd`**: turns the current conversation into a PRD (problem, solution, user stories, implementation and testing decisions) and publishes it as a GitHub issue.
 - **`to-nightshift-issues`**: breaks a PRD into tracer-bullet vertical slices and publishes each as a sub-issue of the PRD via `gh issue create --parent`, with `--blocked-by` links and the `ready-for-agent` label (or `ready-for-human` for slices that need a person). It creates the labels if they are missing.
+- **`recommend-nightshift-profiles`**: recommends best-fit Invocation Profiles for the planned dry-run order of a PRD and emits a copy-ready `nightshift` start command (advice only; no profile-map file).
 
-The intended flow is `to-nightshift-prd` → `to-nightshift-issues` → `nightshift --dry-run` to check the order → `nightshift`. Both skills need an authenticated `gh` (see [Prerequisites](#prerequisites)) and publish to the repository `gh` detects from your working directory.
+The intended flow is `to-nightshift-prd` → `to-nightshift-issues` → `recommend-nightshift-profiles` (optional) → `nightshift --dry-run` → `nightshift`. The first two skills need an authenticated `gh` (see [Prerequisites](#prerequisites)) and publish to the repository `gh` detects from your working directory.
 
 ### Installing
 

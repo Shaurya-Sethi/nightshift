@@ -9,6 +9,8 @@ use clap::ValueEnum;
 use std::io::Write;
 use std::process::{Command, ExitStatus, Stdio};
 
+use crate::invocation_profile::InvocationProfile;
+
 /// Coding-agent CLI variants supported by nightshift.
 #[derive(ValueEnum, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Agent {
@@ -27,6 +29,20 @@ pub enum Agent {
 }
 
 impl Agent {
+    /// Returns every Nightshift-compatible coding agent in picker order.
+    ///
+    /// This list describes supported invocation capability, not installed
+    /// binaries. Preflight deliberately does not inspect `PATH`.
+    pub const fn all() -> &'static [Self] {
+        &[
+            Self::Claude,
+            Self::Codex,
+            Self::Antigravity,
+            Self::Cursor,
+            Self::Pi,
+        ]
+    }
+
     /// Returns the CLI program and flags for this agent.
     ///
     /// The compiled issue prompt is written to the child process stdin after
@@ -58,8 +74,68 @@ impl Agent {
         }
     }
 
+    /// Returns this agent's documented static reasoning-effort values, if known.
+    ///
+    /// The values are capability-level validation only. Agents remain
+    /// responsible for model-specific effort restrictions.
+    pub fn supported_reasoning_efforts(self) -> Option<&'static [&'static str]> {
+        match self {
+            Self::Pi => Some(&["off", "minimal", "low", "medium", "high", "xhigh", "max"]),
+            Self::Claude => Some(&["low", "medium", "high", "max"]),
+            Self::Codex => Some(&["minimal", "low", "medium", "high", "xhigh"]),
+            Self::Antigravity | Self::Cursor => None,
+        }
+    }
+
+    /// Returns the CLI program and flags for a resolved invocation profile.
+    ///
+    /// Model strings are passed through without catalog validation. Reasoning
+    /// effort is validated only against the selected agent's native enum.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a requested model or reasoning effort is not
+    /// supported by this agent, or when effort is outside its native enum.
+    pub fn get_command_with_profile(
+        self,
+        profile: InvocationProfile<'_>,
+    ) -> Result<(&'static str, Vec<String>), String> {
+        if profile.model.is_some() {
+            self.ensure_model_supported()?;
+        }
+        if let Some(effort) = profile.reasoning_effort {
+            self.validate_reasoning_effort(effort)?;
+        }
+
+        let (program, base_args) = self.get_command();
+        let mut args: Vec<String> = base_args.into_iter().map(str::to_string).collect();
+
+        let mut extra = Vec::new();
+        if let Some(model) = profile.model {
+            extra.push("--model".into());
+            extra.push(model.into());
+        }
+        if let Some(effort) = profile.reasoning_effort {
+            self.append_reasoning_effort_args(&mut extra, effort);
+        }
+
+        // GitHub Codex is `exec - --ephemeral`; the stdin marker is not last.
+        let idx = if self == Self::Codex {
+            args.iter()
+                .position(|arg| arg == "-")
+                .expect("codex base command always contains stdin marker")
+        } else {
+            args.len()
+        };
+        args.splice(idx..idx, extra);
+
+        Ok((program, args))
+    }
+
     /// Returns the CLI program and flags for this agent, including `--model`
     /// when an explicit model is requested.
+    ///
+    /// This is a model-only wrapper around [`Self::get_command_with_profile`].
     ///
     /// # Errors
     ///
@@ -69,45 +145,69 @@ impl Agent {
         self,
         model: Option<&str>,
     ) -> Result<(&'static str, Vec<String>), String> {
-        match (self, model) {
-            (Self::Antigravity, Some(_)) => Err(
+        self.get_command_with_profile(InvocationProfile {
+            agent: self,
+            model,
+            reasoning_effort: None,
+        })
+    }
+
+    /// Rejects agents that have no documented non-interactive `--model` flag.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when this agent cannot accept an explicit model.
+    pub(crate) fn ensure_model_supported(self) -> Result<(), String> {
+        if self == Self::Antigravity {
+            return Err(
                 "nightshift: agent antigravity does not support --model; retry without --model to use agy's persisted default model"
                     .to_string(),
-            ),
-            (Self::Codex, Some(model)) => Ok((
-                "codex",
-                vec![
-                    "exec".into(),
-                    "--model".into(),
-                    model.into(),
-                    "-".into(),
-                    "--ephemeral".into(),
-                ],
-            )),
-            (Self::Claude, Some(model)) => Ok((
-                "claude",
-                vec![
-                    "-p".into(),
-                    "--dangerously-skip-permissions".into(),
-                    "--model".into(),
-                    model.into(),
-                ],
-            )),
-            (Self::Cursor, Some(model)) => Ok((
-                "agent",
-                vec![
-                    "-p".into(),
-                    "--force".into(),
-                    "--trust".into(),
-                    "--model".into(),
-                    model.into(),
-                ],
-            )),
-            (Self::Pi, Some(model)) => Ok(("pi", vec!["-p".into(), "--model".into(), model.into()])),
-            (_, None) => {
-                let (program, args) = self.get_command();
-                Ok((program, args.into_iter().map(str::to_string).collect()))
+            );
+        }
+        Ok(())
+    }
+
+    fn validate_reasoning_effort(self, effort: &str) -> Result<(), String> {
+        let Some(supported) = self.supported_reasoning_efforts() else {
+            let hint = match self {
+                Self::Cursor => "; choose a --model slug that encodes the desired effort",
+                Self::Antigravity => "; retry without --reasoning-effort",
+                _ => unreachable!("all effort-capable agents have an enum"),
+            };
+            return Err(format!(
+                "nightshift: agent {} does not support --reasoning-effort{hint}",
+                self.name()
+            ));
+        };
+        if supported.contains(&effort) {
+            return Ok(());
+        }
+        Err(format!(
+            "nightshift: agent {} does not support --reasoning-effort {effort}; supported values: {}",
+            self.name(),
+            supported.join(", ")
+        ))
+    }
+
+    fn append_reasoning_effort_args(self, args: &mut Vec<String>, effort: &str) {
+        match self {
+            Self::Pi => args.extend(["--thinking".into(), effort.into()]),
+            Self::Claude => args.extend(["--effort".into(), effort.into()]),
+            Self::Codex => args.extend(["-c".into(), format!("model_reasoning_effort={effort}")]),
+            Self::Antigravity | Self::Cursor => {
+                unreachable!("unsupported effort is rejected before argv construction")
             }
+        }
+    }
+
+    /// Returns the clap value name for this agent.
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Self::Claude => "claude",
+            Self::Codex => "codex",
+            Self::Antigravity => "antigravity",
+            Self::Cursor => "cursor",
+            Self::Pi => "pi",
         }
     }
 }
@@ -224,6 +324,190 @@ impl AgentRunner for ProcessAgentRunner {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reasoning_effort_is_wired_for_supported_agents() {
+        let profile = InvocationProfile {
+            agent: Agent::Pi,
+            model: Some("configured-model"),
+            reasoning_effort: Some("high"),
+        };
+
+        assert_eq!(
+            Agent::Pi
+                .get_command_with_profile(profile)
+                .expect("pi supports high effort"),
+            (
+                "pi",
+                vec![
+                    "-p".into(),
+                    "--model".into(),
+                    "configured-model".into(),
+                    "--thinking".into(),
+                    "high".into(),
+                ],
+            )
+        );
+        assert_eq!(
+            Agent::Claude
+                .get_command_with_profile(profile)
+                .expect("claude supports high effort"),
+            (
+                "claude",
+                vec![
+                    "-p".into(),
+                    "--dangerously-skip-permissions".into(),
+                    "--model".into(),
+                    "configured-model".into(),
+                    "--effort".into(),
+                    "high".into(),
+                ],
+            )
+        );
+        assert_eq!(
+            Agent::Codex
+                .get_command_with_profile(profile)
+                .expect("codex supports high effort"),
+            (
+                "codex",
+                vec![
+                    "exec".into(),
+                    "--model".into(),
+                    "configured-model".into(),
+                    "-c".into(),
+                    "model_reasoning_effort=high".into(),
+                    "-".into(),
+                    "--ephemeral".into(),
+                ],
+            )
+        );
+    }
+
+    #[test]
+    fn claude_only_exposes_documented_reasoning_effort_values() {
+        assert_eq!(
+            Agent::Claude.supported_reasoning_efforts(),
+            Some(&["low", "medium", "high", "max"][..])
+        );
+        assert!(
+            Agent::Claude
+                .get_command_with_profile(InvocationProfile {
+                    agent: Agent::Claude,
+                    model: None,
+                    reasoning_effort: Some("xhigh"),
+                })
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn unsupported_or_invalid_reasoning_effort_is_rejected() {
+        let unsupported = Agent::Cursor
+            .get_command_with_profile(InvocationProfile {
+                agent: Agent::Cursor,
+                model: None,
+                reasoning_effort: Some("high"),
+            })
+            .expect_err("cursor uses model-encoded effort");
+        assert_eq!(
+            unsupported,
+            "nightshift: agent cursor does not support --reasoning-effort; choose a --model slug that encodes the desired effort"
+        );
+
+        let antigravity = Agent::Antigravity
+            .get_command_with_profile(InvocationProfile {
+                agent: Agent::Antigravity,
+                model: None,
+                reasoning_effort: Some("high"),
+            })
+            .expect_err("antigravity has no reasoning-effort control");
+        assert_eq!(
+            antigravity,
+            "nightshift: agent antigravity does not support --reasoning-effort; retry without --reasoning-effort"
+        );
+
+        let claude = Agent::Claude
+            .get_command_with_profile(InvocationProfile {
+                agent: Agent::Claude,
+                model: None,
+                reasoning_effort: Some("ultracode"),
+            })
+            .expect_err("local claude CLI does not expose ultracode");
+        assert!(claude.contains("claude does not support --reasoning-effort ultracode"));
+
+        let invalid = Agent::Codex
+            .get_command_with_profile(InvocationProfile {
+                agent: Agent::Codex,
+                model: None,
+                reasoning_effort: Some("max"),
+            })
+            .expect_err("codex does not support max effort");
+        assert!(invalid.contains("codex does not support --reasoning-effort max"));
+        assert!(invalid.contains("minimal, low, medium, high, xhigh"));
+    }
+
+    #[test]
+    fn codex_splices_model_and_effort_immediately_before_stdin_marker() {
+        let (program, args) = Agent::Codex
+            .get_command_with_profile(InvocationProfile {
+                agent: Agent::Codex,
+                model: None,
+                reasoning_effort: None,
+            })
+            .expect("codex default profile");
+        assert_eq!(program, "codex");
+        assert_eq!(args, vec!["exec", "-", "--ephemeral"]);
+
+        let (program, args) = Agent::Codex
+            .get_command_with_profile(InvocationProfile {
+                agent: Agent::Codex,
+                model: Some("gpt-5.4"),
+                reasoning_effort: None,
+            })
+            .expect("codex model-only profile");
+        assert_eq!(program, "codex");
+        assert_eq!(args, vec!["exec", "--model", "gpt-5.4", "-", "--ephemeral"]);
+
+        let (program, args) = Agent::Codex
+            .get_command_with_profile(InvocationProfile {
+                agent: Agent::Codex,
+                model: None,
+                reasoning_effort: Some("high"),
+            })
+            .expect("codex effort-only profile");
+        assert_eq!(program, "codex");
+        assert_eq!(
+            args,
+            vec![
+                "exec",
+                "-c",
+                "model_reasoning_effort=high",
+                "-",
+                "--ephemeral"
+            ]
+        );
+
+        let (program, args) = Agent::Codex
+            .get_command_with_profile(InvocationProfile {
+                agent: Agent::Codex,
+                model: Some("gpt-5.4"),
+                reasoning_effort: Some("high"),
+            })
+            .expect("codex model and effort profile");
+        assert_eq!(program, "codex");
+        assert_eq!(
+            args,
+            vec![
+                "exec",
+                "--model",
+                "gpt-5.4",
+                "-c",
+                "model_reasoning_effort=high",
+                "-",
+                "--ephemeral"
+            ]
+        );
+    }
 
     #[test]
     fn model_flag_is_added_for_agents_that_support_it() {

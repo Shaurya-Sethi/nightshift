@@ -1,8 +1,8 @@
-//! Watch Board renderer and offline preview state.
+//! Watch Board renderer, live session, and offline preview state.
 //!
-//! This module is the first Watch Board slice: a compact original dashboard
-//! for sequential PRD child-issue orchestration. It does not talk to GitHub,
-//! spawn agents, or change CLI flags. Live `--tui` wiring comes later.
+//! The renderer is shared by `cargo run --example watch_board` and opt-in
+//! `--tui`. Live wiring keeps orchestration on the calling thread and runs the
+//! dashboard on a scoped UI thread behind a narrow event/cancel seam.
 //!
 //! Preview the same renderer with labeled sample state:
 //!
@@ -11,11 +11,16 @@
 //! ```
 
 use std::io::{self, stdout};
-use std::sync::Once;
-use std::time::Duration;
+use std::panic::{self, AssertUnwindSafe};
+#[cfg(test)]
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Once, mpsc};
+use std::thread;
+use std::time::{Duration, Instant};
 
 use crossterm::cursor::{Hide, Show};
-use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use crossterm::execute;
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
@@ -157,6 +162,115 @@ pub struct IssueRow {
     pub effort: Option<String>,
 }
 
+/// Planned or blocked roster identity plus resolved invocation profile.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RosterIssue {
+    pub number: u32,
+    pub title: String,
+    pub agent: String,
+    pub model: Option<String>,
+    pub effort: Option<String>,
+}
+
+impl RosterIssue {
+    fn into_row(self, status: IssueStatus) -> IssueRow {
+        IssueRow {
+            number: self.number,
+            title: self.title,
+            status,
+            agent: self.agent,
+            model: self.model,
+            effort: self.effort,
+        }
+    }
+}
+
+/// Orchestration facts for the Watch Board. Never includes agent logs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum WatchEvent {
+    /// Header facts once known. Preview titles stay on [`BoardState`]; live
+    /// runs do not send an empty PRD title here.
+    Session {
+        prd: u32,
+        repo: String,
+        branch: String,
+    },
+    /// Latest plan. Completed/failed history is kept by [`BoardState::apply`].
+    Roster {
+        planned: Vec<RosterIssue>,
+        blocked: Vec<RosterIssue>,
+    },
+    /// Git hygiene / sync on the base branch.
+    Hygiene,
+    /// About to invoke the agent.
+    Dispatch { issue: u32 },
+    /// Agent process is running.
+    Running { issue: u32 },
+    /// Checking that GitHub closed the issue.
+    Verify { issue: u32 },
+    /// GitHub confirmed the issue closed.
+    Completed { issue: u32 },
+    /// Run stopped with a readable error.
+    Failed { issue: u32, message: String },
+    /// Work returned an error. Completes the live session so the board can
+    /// dismiss. Does not replace an issue-specific [`Self::Failed`] already
+    /// applied, and does not attribute a failing issue of its own.
+    Ended { message: String },
+    /// Planned work finished or stop was honored.
+    Done,
+}
+
+/// Narrow observer used by the shared orchestration loop.
+pub(crate) trait Watch {
+    fn emit(&self, event: WatchEvent);
+    fn stop_requested(&self) -> bool;
+}
+
+pub(crate) struct NullWatch;
+
+impl Watch for NullWatch {
+    fn emit(&self, _event: WatchEvent) {}
+    fn stop_requested(&self) -> bool {
+        false
+    }
+}
+
+/// Test observer that records events and a cancel flag.
+#[cfg(test)]
+pub(crate) struct WatchLog {
+    events: Mutex<Vec<WatchEvent>>,
+    stop: AtomicBool,
+}
+
+#[cfg(test)]
+impl WatchLog {
+    pub(crate) fn new() -> Self {
+        Self {
+            events: Mutex::new(Vec::new()),
+            stop: AtomicBool::new(false),
+        }
+    }
+
+    pub(crate) fn events(&self) -> Vec<WatchEvent> {
+        self.events.lock().expect("watch log").clone()
+    }
+
+    pub(crate) fn request_stop(&self) {
+        self.stop.store(true, Ordering::SeqCst);
+    }
+}
+
+#[cfg(test)]
+impl Watch for WatchLog {
+    fn emit(&self, event: WatchEvent) {
+        self.events.lock().expect("watch log").push(event);
+    }
+
+    fn stop_requested(&self) -> bool {
+        self.stop.load(Ordering::SeqCst)
+    }
+}
+
 /// Live orchestration phase shown in the profile pane.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Phase {
@@ -224,8 +338,10 @@ pub struct StatusCounts {
 pub enum BoardCommand {
     /// Keep drawing.
     Continue,
-    /// Leave the preview (and later, the live dashboard when idle).
+    /// Leave the preview, or dismiss an idle live board.
     Quit,
+    /// Request stop after the current issue on a live board.
+    Stop,
 }
 
 /// Frame snapshot for the Watch Board renderer.
@@ -251,6 +367,10 @@ pub struct BoardState {
     pub elapsed: Duration,
     /// Whether the `?` help overlay is open.
     pub help_open: bool,
+    /// Live orchestration board, not the offline preview.
+    pub live: bool,
+    /// `q` / Ctrl-C asked to stop after the current issue.
+    pub stop_pending: bool,
 }
 
 impl BoardState {
@@ -310,6 +430,26 @@ impl BoardState {
             phase: Phase::Running { issue: 12 },
             elapsed: Duration::from_secs(75),
             help_open: false,
+            live: false,
+            stop_pending: false,
+        }
+    }
+
+    /// Empty live board for a real `--tui` run.
+    pub fn live_run(prd: u32, repo: String, branch: String) -> Self {
+        Self {
+            prd,
+            prd_title: String::new(),
+            repo,
+            branch,
+            notice: None,
+            issues: Vec::new(),
+            selected: 0,
+            phase: Phase::Idle,
+            elapsed: Duration::ZERO,
+            help_open: false,
+            live: true,
+            stop_pending: false,
         }
     }
 
@@ -343,18 +483,22 @@ impl BoardState {
         }
     }
 
-    /// Applies a key. Navigation and help stay on the board; `q` / Ctrl-C quit.
+    /// Applies a key. Navigation and help stay on the board.
+    ///
+    /// Preview: `q` / Ctrl-C quit. Live active: those keys request stop after
+    /// the current issue. Live idle: `q` / Ctrl-C / Enter dismiss.
     pub fn handle_key(&mut self, key: KeyEvent) -> BoardCommand {
         if key.kind != KeyEventKind::Press {
             return BoardCommand::Continue;
         }
-        if key.modifiers.contains(KeyModifiers::CONTROL)
-            && matches!(key.code, KeyCode::Char('c') | KeyCode::Char('C'))
-        {
-            return BoardCommand::Quit;
+        let quit_key = (key.modifiers.contains(KeyModifiers::CONTROL)
+            && matches!(key.code, KeyCode::Char('c') | KeyCode::Char('C')))
+            || matches!(key.code, KeyCode::Char('q') | KeyCode::Char('Q'));
+        if quit_key {
+            return self.quit_or_stop();
         }
         match key.code {
-            KeyCode::Char('q') | KeyCode::Char('Q') => BoardCommand::Quit,
+            KeyCode::Enter if self.live && self.can_dismiss() => BoardCommand::Quit,
             KeyCode::Char('?') => {
                 self.help_open = !self.help_open;
                 BoardCommand::Continue
@@ -401,6 +545,127 @@ impl BoardState {
 
     fn select_last(&mut self) {
         self.selected = self.issues.len().saturating_sub(1);
+    }
+
+    fn can_dismiss(&self) -> bool {
+        matches!(self.phase, Phase::Done | Phase::Failed { .. })
+    }
+
+    fn quit_or_stop(&mut self) -> BoardCommand {
+        if self.live && !self.can_dismiss() {
+            self.stop_pending = true;
+            self.notice = Some("stop after current issue".to_string());
+            BoardCommand::Stop
+        } else {
+            BoardCommand::Quit
+        }
+    }
+
+    fn select_number(&mut self, number: u32) {
+        if let Some(index) = self.issues.iter().position(|issue| issue.number == number) {
+            self.selected = index;
+        }
+    }
+
+    /// Applies one orchestration event. Completed rows are only created from
+    /// [`WatchEvent::Completed`], never from a missing plan row.
+    /// [`WatchEvent::Ended`] finishes the session without clobbering an
+    /// issue-specific [`Phase::Failed`].
+    pub(crate) fn apply(&mut self, event: WatchEvent) {
+        match event {
+            WatchEvent::Session { prd, repo, branch } => {
+                self.prd = prd;
+                self.repo = repo;
+                self.branch = branch;
+            }
+            WatchEvent::Roster { planned, blocked } => self.merge_roster(planned, blocked),
+            WatchEvent::Hygiene => self.phase = Phase::Hygiene,
+            WatchEvent::Dispatch { issue } => {
+                self.phase = Phase::Dispatch { issue };
+                self.mark_running(issue);
+            }
+            WatchEvent::Running { issue } => {
+                self.phase = Phase::Running { issue };
+                self.mark_running(issue);
+            }
+            WatchEvent::Verify { issue } => {
+                self.phase = Phase::Verify { issue };
+                self.mark_running(issue);
+            }
+            WatchEvent::Completed { issue } => {
+                self.mark_status(issue, IssueStatus::Completed);
+            }
+            WatchEvent::Failed { issue, message } => {
+                self.mark_status(issue, IssueStatus::Failed);
+                self.phase = Phase::Failed { issue, message };
+                self.clear_stop_notice();
+            }
+            WatchEvent::Ended { message } => {
+                if !self.can_dismiss() {
+                    self.phase = Phase::Failed {
+                        issue: self.prd,
+                        message,
+                    };
+                }
+                self.clear_stop_notice();
+            }
+            WatchEvent::Done => {
+                self.phase = Phase::Done;
+                self.clear_stop_notice();
+            }
+        }
+    }
+
+    fn clear_stop_notice(&mut self) {
+        self.stop_pending = false;
+        if self.notice.as_deref() == Some("stop after current issue") {
+            self.notice = None;
+        }
+    }
+
+    fn merge_roster(&mut self, planned: Vec<RosterIssue>, blocked: Vec<RosterIssue>) {
+        let mut issues: Vec<IssueRow> = self
+            .issues
+            .iter()
+            .filter(|row| matches!(row.status, IssueStatus::Completed | IssueStatus::Failed))
+            .cloned()
+            .collect();
+        for item in planned {
+            if issues.iter().any(|row| row.number == item.number) {
+                continue;
+            }
+            issues.push(item.into_row(IssueStatus::Queued));
+        }
+        for item in blocked {
+            if issues.iter().any(|row| row.number == item.number) {
+                continue;
+            }
+            issues.push(item.into_row(IssueStatus::Blocked));
+        }
+        issues.sort_by_key(|row| row.number);
+        self.issues = issues;
+        match self.phase {
+            Phase::Dispatch { issue } | Phase::Running { issue } | Phase::Verify { issue } => {
+                self.mark_running(issue);
+            }
+            _ => {}
+        }
+    }
+
+    fn mark_running(&mut self, issue: u32) {
+        if let Some(row) = self.issues.iter_mut().find(|row| row.number == issue)
+            && !matches!(row.status, IssueStatus::Completed | IssueStatus::Failed)
+        {
+            row.status = IssueStatus::Running;
+        }
+        self.select_number(issue);
+    }
+
+    fn mark_status(&mut self, issue: u32, status: IssueStatus) {
+        if let Some(row) = self.issues.iter_mut().find(|row| row.number == issue) {
+            row.status = status;
+        }
+        self.select_number(issue);
     }
 }
 
@@ -467,6 +732,225 @@ pub fn restore_terminal() {
     let _ = disable_raw_mode();
 }
 
+/// Header facts used to seed the live Watch Board before the first event.
+pub(crate) struct LiveHeader {
+    pub prd: u32,
+    pub repo: String,
+    pub branch: String,
+}
+
+struct LiveWatch {
+    tx: mpsc::Sender<WatchEvent>,
+    stop: Arc<AtomicBool>,
+}
+
+impl Watch for LiveWatch {
+    fn emit(&self, event: WatchEvent) {
+        let _ = self.tx.send(event);
+    }
+
+    fn stop_requested(&self) -> bool {
+        self.stop.load(Ordering::SeqCst)
+    }
+}
+
+/// Runs `work` on the calling thread with a scoped UI thread for the board.
+///
+/// The UI thread owns raw mode and the alternate screen. `q` / Ctrl-C while
+/// work is active sets the cancel flag; the orchestrator must honor it at safe
+/// boundaries. Every `work` result is turned into a terminal [`WatchEvent`]
+/// before join. Producer disconnect without Done/Failed, and a panic in `work`,
+/// still let the UI restore instead of hanging. Original `work` errors are
+/// preserved; success is never invented.
+///
+/// # Errors
+///
+/// Returns terminal setup errors, `work` errors (preferred), or a later UI
+/// draw/input error after current work finishes.
+pub(crate) fn with_live_board<T>(
+    header: LiveHeader,
+    work: impl FnOnce(&dyn Watch) -> Result<T, Box<dyn std::error::Error>>,
+) -> Result<T, Box<dyn std::error::Error>> {
+    thread::scope(|scope| {
+        let (event_tx, event_rx) = mpsc::channel();
+        let (ready_tx, ready_rx) = mpsc::channel();
+        let stop = Arc::new(AtomicBool::new(false));
+        let abort = Arc::new(AtomicBool::new(false));
+        let ui_stop = stop.clone();
+        let ui_abort = abort.clone();
+        let prd = header.prd;
+        let handle = scope.spawn(move || match TerminalGuard::enter() {
+            Ok((_guard, mut terminal)) => {
+                let _ = ready_tx.send(Ok(()));
+                ui_loop(&mut terminal, event_rx, ui_stop, ui_abort, header)
+            }
+            Err(err) => {
+                let message = err.to_string();
+                let _ = ready_tx.send(Err(message.clone()));
+                Err(io::Error::other(message))
+            }
+        });
+        match ready_rx.recv() {
+            Ok(Ok(())) => {}
+            Ok(Err(message)) => return Err(message.into()),
+            Err(_) => {
+                return Err("nightshift: Watch Board UI thread exited during setup".into());
+            }
+        }
+        let watch = LiveWatch {
+            tx: event_tx,
+            stop: stop.clone(),
+        };
+        let work_result = panic::catch_unwind(AssertUnwindSafe(|| work(&watch)));
+        if emit_after_work(&watch, prd, &work_result) {
+            abort.store(true, Ordering::SeqCst);
+        }
+        drop(watch);
+        let ui_result = handle
+            .join()
+            .unwrap_or_else(|_| Err(io::Error::other("Watch Board UI thread panicked")));
+        match work_result {
+            Err(payload) => panic::resume_unwind(payload),
+            Ok(Err(work)) => Err(work),
+            Ok(Ok(value)) => match ui_result {
+                Err(ui) => Err(ui.into()),
+                Ok(()) => Ok(value),
+            },
+        }
+    })
+}
+
+struct ChannelDrain {
+    received: bool,
+}
+
+fn take_events(state: &mut BoardState, rx: &mpsc::Receiver<WatchEvent>) -> ChannelDrain {
+    let mut received = false;
+    let mut disconnected = false;
+    loop {
+        match rx.try_recv() {
+            Ok(event) => {
+                received = true;
+                state.apply(event);
+            }
+            Err(mpsc::TryRecvError::Empty) => break,
+            Err(mpsc::TryRecvError::Disconnected) => {
+                disconnected = true;
+                break;
+            }
+        }
+    }
+    if disconnected && !state.can_dismiss() {
+        state.apply(WatchEvent::Failed {
+            issue: state.prd,
+            message: "nightshift: orchestration ended unexpectedly".to_string(),
+        });
+    }
+    ChannelDrain { received }
+}
+
+fn tick_elapsed(state: &mut BoardState, started: Instant) {
+    if !state.can_dismiss() {
+        state.elapsed = started.elapsed();
+    }
+}
+
+/// Success emits [`WatchEvent::Done`]. Errors emit [`WatchEvent::Ended`] so
+/// the board can dismiss without replacing an issue-specific failure. A panic
+/// still emits [`WatchEvent::Failed`] on the PRD and asks the UI to abort.
+fn emit_after_work<T>(
+    watch: &dyn Watch,
+    prd: u32,
+    work: &thread::Result<Result<T, Box<dyn std::error::Error>>>,
+) -> bool {
+    match work {
+        Ok(Ok(_)) => {
+            watch.emit(WatchEvent::Done);
+            false
+        }
+        Ok(Err(err)) => {
+            watch.emit(WatchEvent::Ended {
+                message: err.to_string(),
+            });
+            false
+        }
+        Err(_) => {
+            watch.emit(WatchEvent::Failed {
+                issue: prd,
+                message: "nightshift: orchestration panicked".to_string(),
+            });
+            true
+        }
+    }
+}
+
+fn ui_loop(
+    terminal: &mut ratatui::Terminal<CrosstermBackend<io::Stdout>>,
+    rx: mpsc::Receiver<WatchEvent>,
+    stop: Arc<AtomicBool>,
+    abort: Arc<AtomicBool>,
+    header: LiveHeader,
+) -> io::Result<()> {
+    let result = ui_loop_inner(terminal, rx, &stop, &abort, header);
+    if result.is_err() {
+        stop.store(true, Ordering::SeqCst);
+        restore_terminal();
+    }
+    result
+}
+
+fn ui_loop_inner(
+    terminal: &mut ratatui::Terminal<CrosstermBackend<io::Stdout>>,
+    rx: mpsc::Receiver<WatchEvent>,
+    stop: &AtomicBool,
+    abort: &AtomicBool,
+    header: LiveHeader,
+) -> io::Result<()> {
+    let theme = Theme::from_env();
+    let mut state = BoardState::live_run(header.prd, header.repo, header.branch);
+    let mut phase_started = Instant::now();
+    let mut drawn = false;
+    loop {
+        if abort.load(Ordering::SeqCst) {
+            return Ok(());
+        }
+        let before = std::mem::discriminant(&state.phase);
+        let drain = take_events(&mut state, &rx);
+        if abort.load(Ordering::SeqCst) {
+            return Ok(());
+        }
+        let phase_changed = std::mem::discriminant(&state.phase) != before;
+        if phase_changed && !state.can_dismiss() {
+            phase_started = Instant::now();
+        }
+        tick_elapsed(&mut state, phase_started);
+        let waiting = state.can_dismiss();
+        if !waiting || drain.received || !drawn {
+            terminal.draw(|frame| render(frame, &state, &theme))?;
+            drawn = true;
+        }
+        if !event::poll(Duration::from_millis(200))? {
+            continue;
+        }
+        match event::read()? {
+            Event::Key(key) if key.kind == KeyEventKind::Press => match state.handle_key(key) {
+                BoardCommand::Stop => {
+                    stop.store(true, Ordering::SeqCst);
+                    terminal.draw(|frame| render(frame, &state, &theme))?;
+                }
+                BoardCommand::Quit => return Ok(()),
+                BoardCommand::Continue => {
+                    terminal.draw(|frame| render(frame, &state, &theme))?;
+                }
+            },
+            Event::Resize(_, _) => {
+                terminal.draw(|frame| render(frame, &state, &theme))?;
+            }
+            _ => {}
+        }
+    }
+}
+
 fn install_panic_hook() {
     static ONCE: Once = Once::new();
     ONCE.call_once(|| {
@@ -510,7 +994,7 @@ pub fn render(frame: &mut Frame, state: &BoardState, theme: &Theme) {
         LayoutMode::Tiny => render_tiny(frame, state, theme, area),
     }
     if state.help_open {
-        render_help(frame, theme, area);
+        render_help(frame, state, theme, area);
     }
 }
 
@@ -530,7 +1014,7 @@ fn render_wide(frame: &mut Frame, state: &BoardState, theme: Theme, area: Rect) 
         render_details(frame, state, theme, cols[1], true);
     }
     if !is_empty(chunks[2]) {
-        render_footer(frame, theme, chunks[2]);
+        render_footer(frame, state, theme, chunks[2]);
     }
 }
 
@@ -550,7 +1034,7 @@ fn render_compact(frame: &mut Frame, state: &BoardState, theme: Theme, area: Rec
     render_roster(frame, state, theme, chunks[1], true);
     render_details(frame, state, theme, chunks[2], true);
     if !is_empty(chunks[3]) {
-        render_footer(frame, theme, chunks[3]);
+        render_footer(frame, state, theme, chunks[3]);
     }
 }
 
@@ -566,7 +1050,7 @@ fn render_tiny(frame: &mut Frame, state: &BoardState, theme: Theme, area: Rect) 
     render_header(frame, state, theme, chunks[0], LayoutMode::Tiny);
     render_roster(frame, state, theme, chunks[1], false);
     if !is_empty(chunks[2]) {
-        render_footer(frame, theme, chunks[2]);
+        render_footer(frame, state, theme, chunks[2]);
     }
 }
 
@@ -710,15 +1194,7 @@ fn render_details(frame: &mut Frame, state: &BoardState, theme: Theme, area: Rec
 }
 
 fn detail_lines<'a>(state: &'a BoardState, theme: Theme) -> Vec<Line<'a>> {
-    let Some(issue) = state.selected_issue() else {
-        return vec![Line::from("no issues")];
-    };
-    let model = issue.model.as_deref().unwrap_or("agent default");
-    let effort = issue.effort.as_deref().unwrap_or("agent default");
     let mut lines = vec![
-        Line::from(format!("agent   {}", issue.agent)),
-        Line::from(format!("model   {model}")),
-        Line::from(format!("effort  {effort}")),
         Line::from(vec![
             Span::raw("phase   "),
             Span::styled(state.phase.label(), theme.phase(&state.phase)),
@@ -727,26 +1203,55 @@ fn detail_lines<'a>(state: &'a BoardState, theme: Theme) -> Vec<Line<'a>> {
             "elapsed {}",
             crate::console::format_elapsed(state.elapsed)
         )),
-        Line::from(vec![
-            Span::raw("status  "),
-            Span::styled(issue.status.as_str(), theme.status(issue.status)),
-        ]),
-        Line::from(Span::styled(issue.title.as_str(), theme.bold())),
     ];
     if let Phase::Failed { message, .. } = &state.phase {
-        lines.push(Line::from(Span::styled(
-            message.as_str(),
-            theme.status(IssueStatus::Failed),
-        )));
+        for line in message.lines() {
+            lines.push(Line::from(Span::styled(
+                line.to_string(),
+                theme.status(IssueStatus::Failed),
+            )));
+        }
     }
+    let Some(issue) = state.selected_issue() else {
+        lines.push(Line::from("no issues"));
+        return lines;
+    };
+    let model = issue.model.as_deref().unwrap_or("agent default");
+    let effort = issue.effort.as_deref().unwrap_or("agent default");
+    lines.push(Line::from(format!("agent   {}", issue.agent)));
+    lines.push(Line::from(format!("model   {model}")));
+    lines.push(Line::from(format!("effort  {effort}")));
+    lines.push(Line::from(vec![
+        Span::raw("status  "),
+        Span::styled(issue.status.as_str(), theme.status(issue.status)),
+    ]));
+    lines.push(Line::from(Span::styled(issue.title.as_str(), theme.bold())));
     lines
 }
 
-fn render_footer(frame: &mut Frame, theme: Theme, area: Rect) {
+fn render_footer(frame: &mut Frame, state: &BoardState, theme: Theme, area: Rect) {
     if is_empty(area) {
         return;
     }
-    let text = if area.width < 24 {
+    let text = if state.stop_pending {
+        if area.width < 28 {
+            "stopping after current"
+        } else {
+            "stop after current issue   waiting"
+        }
+    } else if state.live {
+        if state.can_dismiss() {
+            if area.width < 24 {
+                "q/Enter"
+            } else {
+                "q / Enter dismiss"
+            }
+        } else if area.width < 28 {
+            "q stop   ?  j/k"
+        } else {
+            "j/k select   ? help   q stop after current"
+        }
+    } else if area.width < 24 {
         "j/k  ?  q"
     } else {
         "j/k select   ? help   q quit"
@@ -757,14 +1262,24 @@ fn render_footer(frame: &mut Frame, theme: Theme, area: Rect) {
     );
 }
 
-fn render_help(frame: &mut Frame, theme: Theme, area: Rect) {
+fn render_help(frame: &mut Frame, state: &BoardState, theme: Theme, area: Rect) {
     if is_empty(area) {
         return;
     }
-    let width = 42.min(area.width);
-    let height = 12.min(area.height);
+    let width = 48.min(area.width);
+    let height = 13.min(area.height);
     let help_area = centered(area, width, height);
     frame.render_widget(Clear, help_area);
+    let quit_line = if state.live {
+        "q / Ctrl-C stop after current issue"
+    } else {
+        "q / Ctrl-C leave preview"
+    };
+    let extra = if state.live {
+        "Enter / q  dismiss when idle. Never kills an agent."
+    } else {
+        "Offline sample. No GitHub. No agent."
+    };
     let lines = vec![
         Line::from(Span::styled("Watch Board help", theme.bold())),
         Line::from(""),
@@ -773,12 +1288,9 @@ fn render_help(frame: &mut Frame, theme: Theme, area: Rect) {
         Line::from("g / Home   first issue"),
         Line::from("G / End    last issue"),
         Line::from("?          close help"),
-        Line::from("q / Ctrl-C leave preview"),
+        Line::from(quit_line),
         Line::from(""),
-        Line::from(Span::styled(
-            "Offline sample. No GitHub. No agent.",
-            theme.muted(),
-        )),
+        Line::from(Span::styled(extra, theme.muted())),
     ];
     frame.render_widget(
         Paragraph::new(lines)
@@ -1050,5 +1562,388 @@ mod tests {
         assert!(state.selected_issue().is_none());
         state.handle_key(key(KeyCode::Down));
         assert_eq!(state.selected, 0);
+    }
+
+    fn roster(number: u32, title: &str) -> RosterIssue {
+        RosterIssue {
+            number,
+            title: title.to_string(),
+            agent: "pi".to_string(),
+            model: Some("gpt".to_string()),
+            effort: Some("high".to_string()),
+        }
+    }
+
+    fn apply_work_error(state: &mut BoardState, prd: u32, message: &str) {
+        let watch = WatchLog::new();
+        let err: Box<dyn std::error::Error> = message.into();
+        let work: std::thread::Result<Result<(), Box<dyn std::error::Error>>> = Ok(Err(err));
+        emit_after_work(&watch, prd, &work);
+        for event in watch.events() {
+            state.apply(event);
+        }
+    }
+
+    #[test]
+    fn live_q_requests_stop_while_running_and_dismisses_when_done() {
+        let mut state = BoardState::live_run(42, "owner/repo".into(), "main".into());
+        state.phase = Phase::Running { issue: 10 };
+        assert_eq!(
+            state.handle_key(key(KeyCode::Char('q'))),
+            BoardCommand::Stop
+        );
+        assert!(state.stop_pending);
+        assert_eq!(state.notice.as_deref(), Some("stop after current issue"));
+        let ctrl_c = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
+        assert_eq!(state.handle_key(ctrl_c), BoardCommand::Stop);
+        assert_eq!(
+            state.handle_key(key(KeyCode::Enter)),
+            BoardCommand::Continue
+        );
+        state.phase = Phase::Done;
+        assert_eq!(state.handle_key(key(KeyCode::Enter)), BoardCommand::Quit);
+        assert_eq!(
+            state.handle_key(key(KeyCode::Char('q'))),
+            BoardCommand::Quit
+        );
+    }
+
+    #[test]
+    fn preview_enter_does_not_quit() {
+        let mut state = BoardState::offline_preview();
+        assert_eq!(
+            state.handle_key(key(KeyCode::Enter)),
+            BoardCommand::Continue
+        );
+        assert_eq!(
+            state.handle_key(key(KeyCode::Char('q'))),
+            BoardCommand::Quit
+        );
+    }
+
+    #[test]
+    fn apply_preserves_completed_rows_across_roster_refresh() {
+        let mut state = BoardState::live_run(42, "owner/repo".into(), "main".into());
+        state.apply(WatchEvent::Roster {
+            planned: vec![roster(10, "First"), roster(11, "Second")],
+            blocked: vec![roster(12, "Blocked")],
+        });
+        state.apply(WatchEvent::Running { issue: 10 });
+        state.apply(WatchEvent::Completed { issue: 10 });
+        state.apply(WatchEvent::Roster {
+            planned: vec![roster(11, "Second")],
+            blocked: vec![roster(12, "Blocked")],
+        });
+        assert_eq!(state.issues[0].number, 10);
+        assert_eq!(state.issues[0].status, IssueStatus::Completed);
+        assert_eq!(state.issues[1].number, 11);
+        assert_eq!(state.issues[1].status, IssueStatus::Queued);
+        assert_eq!(state.issues[2].number, 12);
+        assert_eq!(state.issues[2].status, IssueStatus::Blocked);
+        assert_eq!(state.issues[1].agent, "pi");
+        assert_eq!(state.issues[1].model.as_deref(), Some("gpt"));
+        assert_eq!(state.issues[1].effort.as_deref(), Some("high"));
+    }
+
+    #[test]
+    fn apply_does_not_infer_completed_when_a_row_vanishes() {
+        let mut state = BoardState::live_run(42, "owner/repo".into(), "main".into());
+        state.apply(WatchEvent::Roster {
+            planned: vec![roster(10, "First")],
+            blocked: vec![],
+        });
+        state.apply(WatchEvent::Running { issue: 10 });
+        state.apply(WatchEvent::Roster {
+            planned: vec![],
+            blocked: vec![],
+        });
+        assert!(
+            state
+                .issues
+                .iter()
+                .all(|row| row.status != IssueStatus::Completed)
+        );
+    }
+
+    #[test]
+    fn apply_failed_keeps_readable_error_and_failed_row() {
+        let mut state = BoardState::live_run(42, "owner/repo".into(), "main".into());
+        state.apply(WatchEvent::Roster {
+            planned: vec![roster(16, "Broken")],
+            blocked: vec![],
+        });
+        state.apply(WatchEvent::Failed {
+            issue: 16,
+            message: "agent exited 1\ncheckout failed: fatal: not a git repository".to_string(),
+        });
+        let text = plain(&draw(&state, &Theme::native(), 80, 24));
+        assert!(text.contains("failed #16"), "{text}");
+        assert!(text.contains("agent exited 1"), "{text}");
+        assert!(text.contains("fatal:"), "{text}");
+        assert!(text.contains("not a git"), "{text}");
+        assert_eq!(state.issues[0].status, IssueStatus::Failed);
+    }
+
+    #[test]
+    fn live_footer_shows_pending_stop() {
+        let mut state = BoardState::live_run(42, "owner/repo".into(), "main".into());
+        state.phase = Phase::Running { issue: 10 };
+        state.handle_key(key(KeyCode::Char('q')));
+        let text = plain(&draw(&state, &Theme::native(), 80, 16));
+        assert!(text.contains("stop after current issue"), "{text}");
+    }
+
+    #[test]
+    fn empty_failure_shows_phase_and_error_on_compact_board() {
+        let mut state = BoardState::live_run(42, "owner/repo".into(), "main".into());
+        state.phase = Phase::Failed {
+            issue: 42,
+            message: "nightshift: failed to fetch issues: boom. Exiting.".to_string(),
+        };
+        let text = plain(&draw(&state, &Theme::native(), 40, 16));
+        assert!(text.contains("failed #42"), "{text}");
+        assert!(text.contains("failed to fetch issues"), "{text}");
+        assert!(text.contains("boom"), "{text}");
+    }
+
+    #[test]
+    fn compact_selected_failure_keeps_error_ahead_of_profile() {
+        let state = failed_preview();
+        let text = plain(&draw(&state, &Theme::native(), 40, 16));
+        assert!(text.contains("agent exited 1"), "{text}");
+        assert!(text.contains("failed #16"), "{text}");
+        let error_at = text.find("agent exited 1").expect(&text);
+        let agent_at = text.find("agent   codex");
+        if let Some(agent_at) = agent_at {
+            assert!(
+                error_at < agent_at,
+                "error should precede profile padding: {text}"
+            );
+        }
+    }
+
+    #[test]
+    fn done_clears_stop_pending_and_footer_offers_dismiss() {
+        let mut state = BoardState::live_run(42, "owner/repo".into(), "main".into());
+        state.phase = Phase::Running { issue: 10 };
+        assert_eq!(
+            state.handle_key(key(KeyCode::Char('q'))),
+            BoardCommand::Stop
+        );
+        assert!(state.stop_pending);
+        state.apply(WatchEvent::Done);
+        assert!(!state.stop_pending);
+        assert_eq!(state.notice, None);
+        let text = plain(&draw(&state, &Theme::native(), 80, 16));
+        assert!(text.contains("dismiss"), "{text}");
+        assert!(!text.contains("waiting"), "{text}");
+    }
+
+    #[test]
+    fn failed_clears_stop_pending() {
+        let mut state = BoardState::live_run(42, "owner/repo".into(), "main".into());
+        state.phase = Phase::Running { issue: 10 };
+        state.handle_key(key(KeyCode::Char('q')));
+        state.apply(WatchEvent::Failed {
+            issue: 10,
+            message: "agent exited 1".to_string(),
+        });
+        assert!(!state.stop_pending);
+        assert_eq!(state.notice, None);
+        assert_eq!(
+            state.handle_key(key(KeyCode::Char('q'))),
+            BoardCommand::Quit
+        );
+    }
+
+    #[test]
+    fn tick_elapsed_freezes_once_done() {
+        let mut state = BoardState::live_run(42, "owner/repo".into(), "main".into());
+        state.phase = Phase::Hygiene;
+        let started = Instant::now() - Duration::from_secs(5);
+        tick_elapsed(&mut state, started);
+        assert!(state.elapsed >= Duration::from_secs(5));
+        let frozen = state.elapsed;
+        state.apply(WatchEvent::Done);
+        tick_elapsed(&mut state, Instant::now());
+        assert_eq!(state.elapsed, frozen);
+    }
+
+    #[test]
+    fn disconnect_without_terminal_event_is_failed_and_q_quits() {
+        let mut state = BoardState::live_run(42, "owner/repo".into(), "main".into());
+        state.phase = Phase::Hygiene;
+        let (tx, rx) = mpsc::channel();
+        drop(tx);
+        take_events(&mut state, &rx);
+        match &state.phase {
+            Phase::Failed { issue: 42, message } => {
+                assert!(message.contains("ended unexpectedly"), "{message}");
+            }
+            other => panic!("expected failed, got {other:?}"),
+        }
+        assert_eq!(
+            state.handle_key(key(KeyCode::Char('q'))),
+            BoardCommand::Quit
+        );
+    }
+
+    #[test]
+    fn disconnect_after_done_does_not_invent_failure() {
+        let mut state = BoardState::live_run(42, "owner/repo".into(), "main".into());
+        let (tx, rx) = mpsc::channel();
+        tx.send(WatchEvent::Done).expect("send done");
+        drop(tx);
+        take_events(&mut state, &rx);
+        assert_eq!(state.phase, Phase::Done);
+    }
+
+    #[test]
+    fn disconnect_after_failed_keeps_original_message() {
+        let mut state = BoardState::live_run(42, "owner/repo".into(), "main".into());
+        let (tx, rx) = mpsc::channel();
+        tx.send(WatchEvent::Failed {
+            issue: 10,
+            message: "original boom".to_string(),
+        })
+        .expect("send failed");
+        drop(tx);
+        take_events(&mut state, &rx);
+        match &state.phase {
+            Phase::Failed { message, .. } => assert_eq!(message, "original boom"),
+            other => panic!("expected original failure, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn work_ok_emits_done() {
+        let watch = WatchLog::new();
+        let work: std::thread::Result<Result<(), Box<dyn std::error::Error>>> = Ok(Ok(()));
+        assert!(!emit_after_work(&watch, 42, &work));
+        assert!(matches!(watch.events().last(), Some(WatchEvent::Done)));
+    }
+
+    #[test]
+    fn work_err_emits_original_error_and_not_success() {
+        let watch = WatchLog::new();
+        let err: Box<dyn std::error::Error> =
+            "nightshift: failed to parse issue list: expected ident".into();
+        let work: std::thread::Result<Result<(), Box<dyn std::error::Error>>> = Ok(Err(err));
+        assert!(!emit_after_work(&watch, 42, &work));
+        match watch.events().last() {
+            Some(WatchEvent::Ended { message }) => {
+                assert!(message.contains("failed to parse issue list"), "{message}");
+            }
+            other => panic!("expected ended, got {other:?}"),
+        }
+        assert!(
+            !watch
+                .events()
+                .iter()
+                .any(|event| matches!(event, WatchEvent::Done))
+        );
+    }
+
+    #[test]
+    fn apply_agent_failure_then_finalization_keeps_child_phase() {
+        let mut state = BoardState::live_run(1, "tui-offline/preview".into(), "main".into());
+        state.apply(WatchEvent::Roster {
+            planned: vec![roster(10, "Child")],
+            blocked: vec![],
+        });
+        state.apply(WatchEvent::Running { issue: 10 });
+        let message = "nightshift: agent command exited with status 1.";
+        state.apply(WatchEvent::Failed {
+            issue: 10,
+            message: message.to_string(),
+        });
+        apply_work_error(&mut state, 1, message);
+        match &state.phase {
+            Phase::Failed {
+                issue: 10,
+                message: got,
+            } => {
+                assert!(got.contains("exited with status"), "{got}");
+            }
+            other => panic!("expected failed #10, got {other:?}"),
+        }
+        assert_eq!(state.issues[0].number, 10);
+        assert_eq!(state.issues[0].status, IssueStatus::Failed);
+        assert_eq!(
+            state.handle_key(key(KeyCode::Char('q'))),
+            BoardCommand::Quit
+        );
+    }
+
+    #[test]
+    fn apply_still_open_then_finalization_keeps_child_phase() {
+        let mut state = BoardState::live_run(1, "tui-offline/preview".into(), "main".into());
+        state.apply(WatchEvent::Roster {
+            planned: vec![roster(10, "Child")],
+            blocked: vec![],
+        });
+        state.apply(WatchEvent::Verify { issue: 10 });
+        let message = "nightshift: agent exited successfully, but issue #10 is still open on GitHub.\n                Exiting.";
+        state.apply(WatchEvent::Failed {
+            issue: 10,
+            message: message.to_string(),
+        });
+        apply_work_error(&mut state, 1, message);
+        match &state.phase {
+            Phase::Failed {
+                issue: 10,
+                message: got,
+            } => {
+                assert!(got.contains("still open"), "{got}");
+            }
+            other => panic!("expected failed #10, got {other:?}"),
+        }
+        assert_eq!(state.issues[0].number, 10);
+        assert_eq!(state.issues[0].status, IssueStatus::Failed);
+        assert_eq!(
+            state.handle_key(key(KeyCode::Char('q'))),
+            BoardCommand::Quit
+        );
+    }
+
+    #[test]
+    fn finalization_without_prior_failed_is_dismissible() {
+        let mut state = BoardState::live_run(1, "owner/repo".into(), "main".into());
+        apply_work_error(
+            &mut state,
+            1,
+            "nightshift: failed to parse issue list: expected ident",
+        );
+        match &state.phase {
+            Phase::Failed { issue: 1, message } => {
+                assert!(message.contains("failed to parse issue list"), "{message}");
+            }
+            other => panic!("expected failed #1, got {other:?}"),
+        }
+        assert_eq!(
+            state.handle_key(key(KeyCode::Char('q'))),
+            BoardCommand::Quit
+        );
+    }
+
+    #[test]
+    fn work_panic_finalizes_failed_and_requests_ui_abort() {
+        let watch = WatchLog::new();
+        let work = std::panic::catch_unwind(|| -> Result<(), Box<dyn std::error::Error>> {
+            panic!("boom");
+        });
+        assert!(emit_after_work(&watch, 42, &work));
+        match watch.events().last() {
+            Some(WatchEvent::Failed { issue: 42, message }) => {
+                assert!(message.contains("panicked"), "{message}");
+            }
+            other => panic!("expected failed, got {other:?}"),
+        }
+        assert!(
+            !watch
+                .events()
+                .iter()
+                .any(|event| matches!(event, WatchEvent::Done))
+        );
     }
 }

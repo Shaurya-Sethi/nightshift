@@ -67,6 +67,24 @@ pub struct Args {
     /// Simulate planned order and preview the first prompt and command without invoking an agent; requested preflight still runs.
     #[arg(long)]
     pub dry_run: bool,
+    /// Opt-in Watch Board. Requires stdin and stdout TTY and fails before GitHub or git work, including repo resolution. While work is active, q and Ctrl-C stop after the current issue without killing the agent. When idle, q or Enter dismisses the board. Without this flag, cooked and non-TTY output stay unchanged.
+    #[arg(long)]
+    pub tui: bool,
+}
+
+/// Rejects `--tui` unless both stdin and stdout are terminals.
+///
+/// Call this before any GitHub or git work, including repository resolution.
+///
+/// # Errors
+///
+/// Returns an actionable message when `--tui` is set and either handle is not a TTY.
+pub fn ensure_tui_tty(tui: bool, stdin_tty: bool, stdout_tty: bool) -> Result<(), String> {
+    if tui && !(stdin_tty && stdout_tty) {
+        Err("nightshift: --tui requires an interactive TTY on stdin and stdout".to_string())
+    } else {
+        Ok(())
+    }
 }
 
 impl Args {
@@ -85,6 +103,7 @@ impl Args {
             repo,
             base_branch: &self.base_branch,
             dry_run: self.dry_run,
+            tui: self.tui,
             whole_run_defaults: WholeRunInvocationDefaults {
                 agent: self.agent,
                 model: self.model.as_deref(),
@@ -345,6 +364,38 @@ mod tests {
                 ..PreflightDimensions::default()
             }
         );
+    }
+
+    #[test]
+    fn tui_flag_is_opt_in_and_help_explains_tty_and_stop() {
+        let args = Args::try_parse_from(["nightshift", "--prd", "42", "--agent", "pi"])
+            .expect("tui is optional");
+        assert!(!args.tui);
+
+        let args = Args::try_parse_from(["nightshift", "--prd", "42", "--agent", "pi", "--tui"])
+            .expect("--tui should parse");
+        assert!(args.tui);
+        assert!(
+            args.to_workflow_config("owner/repo", DirectivePolicy::BuiltIn)
+                .tui
+        );
+
+        let mut command = Args::command();
+        let help = command.render_long_help().to_string();
+        assert!(help.contains("Requires stdin and stdout TTY"));
+        assert!(help.contains("stop after the current issue"));
+        assert!(help.contains("fails before GitHub or git work"));
+    }
+
+    #[test]
+    fn tui_without_tty_is_rejected_before_any_work() {
+        super::ensure_tui_tty(false, false, false).expect("plain mode allows non-TTY");
+        super::ensure_tui_tty(true, true, true).expect("tui allows a full TTY");
+        for (stdin_tty, stdout_tty) in [(false, false), (true, false), (false, true)] {
+            let error = super::ensure_tui_tty(true, stdin_tty, stdout_tty)
+                .expect_err("--tui must require both TTYs");
+            assert!(error.contains("--tui requires an interactive TTY"));
+        }
     }
 
     #[test]

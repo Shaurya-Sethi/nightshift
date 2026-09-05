@@ -5,14 +5,23 @@
 
 use clap::Parser;
 use nightshift::agent::ProcessAgentRunner;
-use nightshift::cli::Args;
+use nightshift::cli::{Args, ensure_tui_tty};
 use nightshift::git::{GitCliAdapter, GitOps};
 use nightshift::github::{GhCliAdapter, GithubIssues};
 use nightshift::orchestrator::{Runtime, run};
 use nightshift::prompt::{DirectivePolicy, load_directives};
+use std::io::IsTerminal;
 
 fn main() {
     let args = Args::parse();
+    if let Err(e) = ensure_tui_tty(
+        args.tui,
+        std::io::stdin().is_terminal(),
+        std::io::stdout().is_terminal(),
+    ) {
+        eprintln!("{e}");
+        std::process::exit(1);
+    }
     let github = GhCliAdapter;
     let agent_runner = ProcessAgentRunner;
 
@@ -25,7 +34,13 @@ fn main() {
     };
 
     let git = match GitCliAdapter::for_repo(&repo) {
-        Ok(git) => git,
+        Ok(git) => {
+            if args.tui {
+                git.capture_stdio()
+            } else {
+                git
+            }
+        }
         Err(e) => {
             eprintln!("{}", e);
             std::process::exit(1);

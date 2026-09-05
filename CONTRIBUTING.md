@@ -125,7 +125,7 @@ Tests live next to the code they guard: `#[cfg(test)]` modules at the bottom of 
 **Secondary:** pure string helpers (e.g. GitHub remote slug parsing) and orchestrator loop tests via trait mocks (`GithubIssues`, `GitOps`, `AgentRunner`).
 
 **Intentionally out of scope:**
-- Testing `main` / clap flag parsing, except pick-flag contracts in [`src/cli.rs`](src/cli.rs) (mutual exclusion of `--pick-efforts` / `--pick-models`, Preflight Dimension mapping, Cursor help text, OpenCode `--agent` value name vs kebab-case `open-code`). Those are workflow contracts, not parser-string tests.
+- Testing `main` / clap flag parsing, except pick-flag contracts in [`src/cli.rs`](src/cli.rs) (mutual exclusion of `--pick-efforts` / `--pick-models`, Preflight Dimension mapping, Cursor help text, OpenCode `--agent` value name vs kebab-case `open-code`) and the `--tui` TTY-gate in [`tests/tui_tty.rs`](tests/tui_tty.rs). `tui_tty.rs` protects side-effect ordering across `main`: `--tui` must fail before GitHub or git work when stdin or stdout is not a TTY. Those are workflow contracts, not generic clap parsing tests.
 - Adapter subprocess wiring
 - Network or auth-dependent flows
 - Snapshotting every function

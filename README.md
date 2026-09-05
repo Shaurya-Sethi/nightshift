@@ -47,6 +47,7 @@ nightshift --prd 12 --agent claude --model claude-opus-5
 | `--prompt-file`       |          | built-in guidelines       | File that overrides built-in directives for every issue unless a `--pick-prompts` row supplies a file |
 | `--append-prompt-file`|          | n/a                       | File appended to the resolved agent's built-in directives for every issue unless a `--pick-prompts` row supplies a file. Mutually exclusive with `--prompt-file`. |
 | `--dry-run`           |          | `false`                   | Show planned order and first prompt without starting an agent; requested preflight still runs        |
+| `--tui`               |          | `false`                   | Opt-in Watch Board. Requires stdin and stdout TTY; fails before GitHub or git work. `q` / Ctrl-C stop after the current issue. Idle `q` / Enter dismisses. Without this flag, cooked and non-TTY output stay unchanged. |
 
 ### Invocation profiles
 
@@ -62,6 +63,8 @@ An **Invocation Profile** is agent plus model plus reasoning effort for one invo
 Picker is one in-memory batch before the loop, covering the **Simulated Solvable Set** (planned issues, including those blocked only by another planned issue). Press `q` or Ctrl-C to abort; no partial selection starts a run. Built-in directives follow the resolved agent. `--prompt-file` overrides them for every issue that does not pick a file; `--append-prompt-file` appends to resolved-agent built-ins for those issues. Pick modes need a TTY (else fail fast to whole-run `--agent`, `--model`, `--reasoning-effort`, `--prompt-file`, and `--append-prompt-file`). Without `--pick-agents`, `--pick-efforts` is only for `pi`, `copilot`, `claude`, `codex`, and `opencode`; Cursor `--pick-models` is model-only; Antigravity supports neither. With `--pick-agents`, each row skips unsupported knobs (Cursor: no separate effort; Antigravity: no model or effort).
 
 `--dry-run` does not skip a requested picker: complete preflight first, then nightshift prints every planned issue with resolved agent, model, and effort, first issue's prompt, and its would-invoke command. No agent process starts. Without a picker, dry-run resolves rows from whole-run defaults and agent defaults.
+
+`--tui` is opt-in and requires both stdin and stdout to be terminals. The check runs before repository resolution, git, or GitHub work. Cooked Invocation Profile Preflight still runs first when pick flags are set; stdin/stdout locks are released before the dashboard takes the terminal. `--tui --dry-run` shows the real plan on the board without spawning, then prints the existing planned-order / would-invoke / first-prompt preview after you dismiss and leave the alternate screen. Non-TUI dry-run is unchanged. Git stdout/stderr is captured on the TUI path so checkout/pull cannot corrupt the board; plain mode git output is unchanged. Agent stdout/stderr stays discarded.
 
 ## Supported Agents
 
@@ -132,15 +135,25 @@ Then invoke them by name in your agent.
 
 For long-running PRD loops, see [docs/keep-alive.md](docs/keep-alive.md).
 
-## Watch Board preview
+## Watch Board
 
-The Watch Board is a full-screen renderer for later opt-in `--tui` orchestration ([#15](https://github.com/Shaurya-Sethi/nightshift/issues/15)). This slice ships the board and an **offline preview** only. It does not fetch GitHub, spawn agents, or add `--tui`.
+`--tui` opens a full-screen Watch Board for sequential PRD child-issue orchestration ([#15](https://github.com/Shaurya-Sethi/nightshift/issues/15)). Default cooked TTY and non-TTY console behavior stays unchanged without the flag.
+
+```bash
+nightshift --prd 12 --agent pi --tui
+```
+
+The board shows repo, PRD, branch, planned and blocked issues, resolved per-issue profiles, live hygiene/dispatch/verify phases, and elapsed time. An issue is marked completed only after GitHub confirms it is closed. Completed rows stay on the board across plan refreshes. Errors stay readable on the finished board until `q` or Enter; the original exit status is preserved.
+
+While work is active, `q` and Ctrl-C request **stop after the current issue**. nightshift does not kill or detach the coding agent and does not dispatch the next issue. After the current issue (or a safe boundary following git/GitHub work), the board stays inspectable until dismiss.
+
+The same renderer is available offline:
 
 ```bash
 cargo run --example watch_board
 ```
 
-The example uses the same renderer as the library, with labeled sample rows for running, completed, blocked, queued, and failed. `NO_COLOR` is honored. Status is always written as text, not color alone.
+The example uses labeled sample rows for running, completed, blocked, queued, and failed. `NO_COLOR` is honored. Status is always written as text, not color alone.
 
 | Key | Action |
 | --- | --- |
@@ -149,7 +162,8 @@ The example uses the same renderer as the library, with labeled sample rows for 
 | `g` / `Home` | first issue |
 | `G` / `End` | last issue |
 | `?` | help |
-| `q` / `Ctrl-C` | leave and restore the terminal |
+| `q` / `Ctrl-C` | preview: leave. Live active: stop after current issue. Live idle: dismiss |
+| `Enter` | live idle / completed / error: dismiss |
 
 ## Contributing
 

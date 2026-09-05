@@ -6,7 +6,7 @@
 //! base-branch checkout and pull that happen before each orchestrator iteration.
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 /// Git operations required by the orchestrator.
 ///
@@ -37,6 +37,7 @@ pub trait GitOps {
 /// [`GitOps`] implementation backed by the `git` command-line tool.
 pub struct GitCliAdapter {
     workdir: PathBuf,
+    capture_output: bool,
 }
 
 impl GitCliAdapter {
@@ -46,7 +47,19 @@ impl GitCliAdapter {
     /// directory must be inside a git worktree whose remotes point at that slug.
     pub fn for_repo(repo: &str) -> Result<Self, Box<dyn std::error::Error>> {
         let workdir = resolve_workspace(repo)?;
-        Ok(Self { workdir })
+        Ok(Self {
+            workdir,
+            capture_output: false,
+        })
+    }
+
+    /// Capture git stdio, disable terminal prompts, and keep stderr on failure.
+    ///
+    /// Used by `--tui` so checkout/pull cannot corrupt the Watch Board or steal
+    /// raw-mode input. Plain `for_repo` behavior is unchanged.
+    pub fn capture_stdio(mut self) -> Self {
+        self.capture_output = true;
+        self
     }
 
     /// Returns the verified worktree root used for git commands.
@@ -57,6 +70,10 @@ impl GitCliAdapter {
     fn git(&self) -> Command {
         let mut command = Command::new("git");
         command.current_dir(&self.workdir);
+        if self.capture_output {
+            command.env("GIT_TERMINAL_PROMPT", "0");
+            command.stdin(Stdio::null());
+        }
         command
     }
 }
@@ -82,25 +99,48 @@ impl GitOps for GitCliAdapter {
     }
 
     fn ensure_hygiene(&self, base_branch: &str) -> Result<(), Box<dyn std::error::Error>> {
-        println!(
-            "nightshift: enforcing git hygiene in {} (checking out and pulling {})...",
-            self.workdir.display(),
-            base_branch
-        );
-
-        let checkout_status = self.git().args(["checkout", base_branch]).status()?;
-
-        if !checkout_status.success() {
-            return Err(format!("failed to checkout base branch '{}'", base_branch).into());
+        if !self.capture_output {
+            println!(
+                "nightshift: enforcing git hygiene in {} (checking out and pulling {})...",
+                self.workdir.display(),
+                base_branch
+            );
         }
 
-        let pull_status = self.git().args(["pull"]).status()?;
-
-        if !pull_status.success() {
-            return Err("failed to pull latest changes from remote".into());
-        }
-
+        let checkout_action = format!("checkout base branch '{base_branch}'");
+        self.run_git(&["checkout", base_branch], &checkout_action)?;
+        self.run_git(&["pull"], "pull latest changes from remote")?;
         Ok(())
+    }
+}
+
+impl GitCliAdapter {
+    fn run_git(&self, args: &[&str], action: &str) -> Result<(), Box<dyn std::error::Error>> {
+        if self.capture_output {
+            let output = self.git().args(args).output()?;
+            if output.status.success() {
+                Ok(())
+            } else {
+                Err(captured_git_error(action, &output.stderr).into())
+            }
+        } else {
+            let status = self.git().args(args).status()?;
+            if status.success() {
+                Ok(())
+            } else {
+                Err(format!("failed to {action}").into())
+            }
+        }
+    }
+}
+
+fn captured_git_error(action: &str, stderr: &[u8]) -> String {
+    let detail = String::from_utf8_lossy(stderr);
+    let detail = detail.trim();
+    if detail.is_empty() {
+        format!("failed to {action}")
+    } else {
+        format!("failed to {action}: {detail}")
     }
 }
 
@@ -337,6 +377,21 @@ mod tests {
         assert_eq!(
             parse_github_repo_slug("git@gitlab.com:foobar/nightshift.git"),
             None
+        );
+    }
+
+    #[test]
+    fn captured_git_error_keeps_actionable_stderr() {
+        assert_eq!(
+            super::captured_git_error("checkout base branch 'main'", b""),
+            "failed to checkout base branch 'main'"
+        );
+        assert_eq!(
+            super::captured_git_error(
+                "checkout base branch 'main'",
+                b"fatal: invalid reference: main\n"
+            ),
+            "failed to checkout base branch 'main': fatal: invalid reference: main"
         );
     }
 

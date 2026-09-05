@@ -16,6 +16,8 @@ pub mod console;
 pub mod git;
 /// GitHub issue access through the GitHub CLI.
 pub mod github;
+/// Per-invocation model and reasoning-effort settings.
+pub mod invocation_profile;
 /// The PRD child-issue selection and agent execution loop.
 pub mod orchestrator;
 /// Next-issue selection from native GitHub relationship JSON.

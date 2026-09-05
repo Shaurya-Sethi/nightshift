@@ -13,7 +13,7 @@ Adding a coding-agent CLI requires command wiring, Invocation Profile capability
 
 ### Invocation Profile Preflight
 
-`--pick-agents` lists `Agent::all()` without probing `PATH`; keep that list in sync when adding an agent. Issue #5 (OpenCode, Copilot) adds variants at the end of `Agent::all()` and the effort match tables; profile types do not change. `--pick-agents` may stack with `--pick-efforts` or `--pick-models`; rows collect agent, then model when enabled and supported, then effort when enabled and supported. A row that selects another agent does not inherit whole-run `--model` or `--reasoning-effort`; it uses that agent's defaults unless the row supplies a value. This is Same-Agent Defaults Inheritance. Cursor skips separate effort because it is model-encoded; Antigravity skips model and effort.
+`--pick-agents` lists `Agent::all()` without probing `PATH`; keep that list in sync when adding an agent. `--pick-agents` may stack with `--pick-efforts` or `--pick-models`; rows collect agent, then model when enabled and supported, then effort when enabled and supported. A row that selects another agent does not inherit whole-run `--model` or `--reasoning-effort`; it uses that agent's defaults unless the row supplies a value. This is Same-Agent Defaults Inheritance. Cursor skips separate effort because it is model-encoded; Antigravity skips model and effort.
 
 ### Confirm upstream behavior first
 

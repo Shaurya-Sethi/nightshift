@@ -107,14 +107,6 @@ Use `--dry-run` to preview planned order, resolved Invocation Profiles, first pr
 1. issue #10  Child 10  agent pi  model issue-model  reasoning effort high
 ```
 
-A two-issue PRD can use different models or effort levels in one run. Confirm that in dry-run first:
-
-```bash
-nightshift --prd <prd> --agent pi --pick-models --dry-run
-```
-
-Assign two models (or two efforts with `--pick-efforts`). Both must appear on the assignment table, and `would invoke` must include the first row's knobs. Then run the same command without `--dry-run` and confirm two `profile  agent …` lines with those different models or efforts, and that both issues close. That dry-run-then-live check is the issue #4 done-when.
-
 ## Skills
 
 Writing sub-issues and blocked-by links by hand is tedious, so nightshift ships three agent skills under [`skills/`](skills/):

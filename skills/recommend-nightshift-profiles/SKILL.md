@@ -25,7 +25,7 @@ Ask, in order:
    - **Effort dimension** (`--pick-efforts`) **or** **model dimension** (`--pick-models`) — mutually exclusive; either may stack with `--pick-agents`.
 4. **Models under consideration** — user names the allowlist and/or whole-run pin. Do **not** scrape agent model catalogs. When `--pick-agents` is on and agents will differ, collect model notes **per candidate agent** the user might choose (still user-supplied, not catalog scrape).
 
-**Capability hard-stop** before any dry-run: check chosen whole-run agent and enabled dimensions against the Nightshift agent matrix in this repo's README (and ADRs under `docs/adr/` when present). Refuse illegal whole-run combos. Point at the matrix; do not invent argv. The matrix is five agents only: Claude, Codex, Cursor, Pi, Antigravity. OpenCode and Copilot land in issue #5; when they do, reread the updated README table rather than assuming argv.
+**Capability hard-stop** before any dry-run: check chosen whole-run agent and enabled dimensions against this repo's README agent matrix. Refuse illegal whole-run combos. Point at the matrix; do not invent argv.
 
 Rules of thumb:
 
@@ -87,7 +87,7 @@ Using PRD, issue bodies, and codebase as needed (fetch/read however repo practic
 - **Antigravity:** no model/effort columns — recommend agent only; model/effort cells = `—`.
 - Other agents: use README matrix enums for effort; free-string models from the user allowlist.
 
-Recommend only Claude, Codex, Cursor, Pi, and Antigravity. Do not invent OpenCode or Copilot argv until issue #5 updates the README table.
+Recommend only Claude, Codex, Cursor, Pi, and Antigravity.
 
 **Done when:** every planned issue has a recommendation and a short **why** defending fit (not overkill, not underpowered), including why that agent when agents vary.
 
@@ -95,7 +95,7 @@ Recommend only Claude, Codex, Cursor, Pi, and Antigravity. Do not invent OpenCod
 
 Ask whether to add any non-profile flags the user cares about (e.g. `--prompt-file`, resume floor). Only stamp flags they accept. Do not invent defaults for extras.
 
-Note: one `--prompt-file` overrides built-ins for **every** issue regardless of per-issue agent (**Agent-Scoped Directives** only apply when no prompt file is set).
+Note: one `--prompt-file` overrides built-ins for **every** issue regardless of per-issue agent.
 
 **Done when:** extras accepted or explicitly skipped.
 

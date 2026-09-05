@@ -69,7 +69,7 @@ A Pi row omits step 6 (`Self-review using sub-agents.`). Pi has no sub-agent sup
 You can provide a custom instructions file via `--prompt-file <path>`.
 
 > [!IMPORTANT]
-> A custom prompt file **completely overrides** the default directives for **every** issue in the run, regardless of per-issue agent. Agent-Scoped Directives apply only when no prompt file is set. If you provide a custom prompt file, you are responsible for instructing the agent on how to branch, test, open a PR, and close the issue, or whichever workflow you prefer the agent to execute.
+> A custom prompt file **completely overrides** the default directives for **every** issue in the run, regardless of per-issue agent. If you provide a custom prompt file, you are responsible for instructing the agent on how to branch, test, open a PR, and close the issue, or whichever workflow you prefer the agent to execute.
 
 ---
 

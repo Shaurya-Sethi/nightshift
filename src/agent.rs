@@ -212,25 +212,31 @@ impl Agent {
     }
 }
 
-fn append_model_hint(message: &mut String, model: Option<&str>) {
-    if let Some(model) = model {
+fn append_profile_hints(message: &mut String, profile: InvocationProfile<'_>) {
+    if let Some(model) = profile.model {
         message.push(' ');
         message.push_str(&format!(
             "The agent may have rejected --model {model}; retry without --model or use a model accepted by that CLI."
         ));
     }
+    if let Some(effort) = profile.reasoning_effort {
+        message.push(' ');
+        message.push_str(&format!(
+            "The agent may have rejected --reasoning-effort {effort}; retry without --reasoning-effort or use a level accepted by that CLI."
+        ));
+    }
 }
 
-fn agent_exit_error(status: ExitStatus, model: Option<&str>) -> String {
+fn agent_exit_error(status: ExitStatus, profile: InvocationProfile<'_>) -> String {
     let mut message = format!("nightshift: agent command exited with status {status}.");
-    append_model_hint(&mut message, model);
+    append_profile_hints(&mut message, profile);
     message
 }
 
-fn stdin_write_error(write_err: std::io::Error, model: Option<&str>) -> String {
+fn stdin_write_error(write_err: std::io::Error, profile: InvocationProfile<'_>) -> String {
     let mut message =
         format!("nightshift: failed to write prompt to agent's stdin: {write_err}. Exiting.");
-    append_model_hint(&mut message, model);
+    append_profile_hints(&mut message, profile);
     message
 }
 
@@ -243,27 +249,39 @@ fn stdin_write_error(write_err: std::io::Error, model: Option<&str>) -> String {
 ///
 /// ```rust
 /// # use nightshift::agent::{Agent, AgentRunner};
+/// # use nightshift::invocation_profile::InvocationProfile;
 /// # struct Recorder;
 /// # impl AgentRunner for Recorder {
 /// #     fn run(
 /// #         &self,
-/// #         _agent: Agent,
-/// #         _model: Option<&str>,
+/// #         _profile: InvocationProfile<'_>,
 /// #         _prompt: &str,
 /// #     ) -> Result<(), Box<dyn std::error::Error>> {
 /// #         Ok(())
 /// #     }
 /// # }
 /// let runner = Recorder;
-/// runner.run(Agent::Cursor, Some("gpt-5.2"), "Solve issue #7")?;
+/// runner.run(
+///     InvocationProfile {
+///         agent: Agent::Cursor,
+///         model: Some("gpt-5.2"),
+///         reasoning_effort: None,
+///     },
+///     "Solve issue #7",
+/// )?;
 /// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
 pub trait AgentRunner {
-    /// Sends `prompt` to `agent` and returns when the agent process completes.
+    /// Sends `prompt` using `profile` and returns when the agent process completes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when command construction fails, the agent process
+    /// cannot be spawned, the prompt cannot be written to stdin, waiting on the
+    /// process fails, or the agent exits unsuccessfully.
     fn run(
         &self,
-        agent: Agent,
-        model: Option<&str>,
+        profile: InvocationProfile<'_>,
         prompt: &str,
     ) -> Result<(), Box<dyn std::error::Error>>;
 }
@@ -274,11 +292,10 @@ pub struct ProcessAgentRunner;
 impl AgentRunner for ProcessAgentRunner {
     fn run(
         &self,
-        agent: Agent,
-        model: Option<&str>,
+        profile: InvocationProfile<'_>,
         prompt: &str,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let (cmd_name, cmd_args) = agent.get_command_with_model(model)?;
+        let (cmd_name, cmd_args) = profile.agent.get_command_with_profile(profile)?;
 
         let mut child = Command::new(cmd_name)
             .args(&cmd_args)
@@ -308,13 +325,13 @@ impl AgentRunner for ProcessAgentRunner {
 
         if let Err(write_err) = write_result {
             if !status.success() {
-                return Err(agent_exit_error(status, model).into());
+                return Err(agent_exit_error(status, profile).into());
             }
-            return Err(stdin_write_error(write_err, model).into());
+            return Err(stdin_write_error(write_err, profile).into());
         }
 
         if !status.success() {
-            return Err(agent_exit_error(status, model).into());
+            return Err(agent_exit_error(status, profile).into());
         }
 
         Ok(())

@@ -31,16 +31,20 @@ nightshift --prd 12 --agent claude --model claude-sonnet-4-6
 ```
 
 
-| Flag            | Required | Default                   | Description                                                            |
-| --------------- | -------- | ------------------------- | ---------------------------------------------------------------------- |
-| `--prd`         | yes      | n/a                       | The PRD issue number to work through                                   |
-| `--agent`       | yes      | n/a                       | Which agent to use: `claude`, `codex`, `antigravity`, `cursor`, `pi`   |
-| `--model`       |          | agent's persisted default | Explicit model for agents that support non-interactive model selection |
-| `--issue`       |          | `0`                       | Skip issues below this number (useful when resuming)                   |
-| `--repo`        |          | detected from `gh`        | Repository as `owner/name`                                             |
-| `--base-branch` |          | `main`                    | Branch to sync to before each issue                                    |
-| `--prompt-file` |          | built-in guidelines       | File with extra instructions for your agent                            |
-| `--dry-run`     |          | `false`                   | Show what would run, without starting an agent                         |
+| Flag                  | Required | Default                   | Description                                                                                          |
+| --------------------- | -------- | ------------------------- | ---------------------------------------------------------------------------------------------------- |
+| `--prd`               | yes      | n/a                       | The PRD issue number to work through                                                                 |
+| `--agent`             | yes      | n/a                       | Whole-run default agent: `claude`, `codex`, `antigravity`, `cursor`, `pi`. `--pick-agents` may override per issue. |
+| `--model`             |          | agent's persisted default | Whole-run model for agents that support non-interactive model selection                              |
+| `--reasoning-effort`  |          | agent's persisted default | Whole-run agent-native effort. Cursor uses a model slug instead.                                     |
+| `--pick-agents`       |          | `false`                   | TTY-only: pick an agent per planned issue. May combine with either other pick flag.                  |
+| `--pick-efforts`      |          | `false`                   | TTY-only: pick effort per planned issue. Mutually exclusive with `--pick-models`.                    |
+| `--pick-models`       |          | `false`                   | TTY-only: pick model (and effort where supported) per planned issue.                                 |
+| `--issue`             |          | `0`                       | Skip issues below this number (useful when resuming)                                                 |
+| `--repo`              |          | detected from `gh`        | Repository as `owner/name`                                                                           |
+| `--base-branch`       |          | `main`                    | Branch to sync to before each issue                                                                  |
+| `--prompt-file`       |          | built-in guidelines       | File with extra instructions for your agent                                                          |
+| `--dry-run`           |          | `false`                   | Show planned order and first prompt without starting an agent; requested preflight still runs        |
 
 
 ## Supported Agents
@@ -74,7 +78,13 @@ For the selected issue, nightshift constructs a unified prompt and pipes it to t
 
 After the agent exits, nightshift checks that the issue is actually closed on GitHub. If it is, the loop continues from step one. If not, nightshift stops and tells you; the agent may have exited cleanly but left the issue open, which usually means something needs your attention.
 
-Use `--dry-run` to see which issue would be selected and what the prompt looks like, without invoking an agent.
+Use `--dry-run` to see the planned issue order with resolved agent, model, and reasoning effort per row, plus the first prompt, without invoking an agent. Example assignment line:
+
+```text
+1. issue #10  Child 10  agent pi  model issue-model  reasoning effort high
+```
+
+Requested `--pick-agents` / `--pick-efforts` / `--pick-models` still run before that preview.
 
 ## Skills
 

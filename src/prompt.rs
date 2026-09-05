@@ -5,12 +5,19 @@
 //! while this module preserves the selected issue details and instructions in a
 //! form that can be sent to an agent over stdin.
 
+use std::borrow::Cow;
 use std::fs::File;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use crate::agent::Agent;
 use crate::github::GithubIssue;
+
+/// Marker indicating that built-in directives must follow the resolved agent.
+///
+/// The CLI uses this only when no prompt file is supplied. Any other value is
+/// a shared explicit override for every invocation in the run.
+pub const BUILT_IN_DIRECTIVES: &str = "\0nightshift built-in directives";
 
 /// Returns the built-in maintainer directives for agents that support the full workflow.
 ///
@@ -41,27 +48,36 @@ pub fn default_directives_for(agent: Agent) -> String {
     }
 }
 
-/// Loads maintainer directives from a file or falls back to [`default_directives_for`].
+/// Resolves shared or built-in directives for one invocation.
+///
+/// [`BUILT_IN_DIRECTIVES`] selects the resolved agent's built-ins. Any other
+/// value is returned unchanged, preserving one `--prompt-file` override for
+/// the whole run.
+pub fn directives_for_invocation<'a>(directives: &'a str, agent: Agent) -> Cow<'a, str> {
+    if directives == BUILT_IN_DIRECTIVES {
+        Cow::Owned(default_directives_for(agent))
+    } else {
+        Cow::Borrowed(directives)
+    }
+}
+
+/// Loads maintainer directives from a file.
 ///
 /// File contents are trimmed before being appended to the rendered issue prompt.
-/// A supplied file always overrides agent-specific built-in directives.
+/// A supplied file overrides agent-specific built-in directives for every issue.
 ///
 /// # Errors
 ///
-/// Returns a user-facing error string when a requested prompt file cannot be
-/// read.
-pub fn load_directives(prompt_file: Option<&Path>, agent: Agent) -> Result<String, String> {
-    match prompt_file {
-        Some(prompt_file) => std::fs::read_to_string(prompt_file)
-            .map(|prompt| prompt.trim().to_string())
-            .map_err(|_| {
-                format!(
-                    "nightshift: failed to read prompt file: {}",
-                    prompt_file.display()
-                )
-            }),
-        None => Ok(default_directives_for(agent)),
-    }
+/// Returns a user-facing error string when the prompt file cannot be read.
+pub fn load_directives(prompt_file: &Path) -> Result<String, String> {
+    std::fs::read_to_string(prompt_file)
+        .map(|prompt| prompt.trim().to_string())
+        .map_err(|_| {
+            format!(
+                "nightshift: failed to read prompt file: {}",
+                prompt_file.display()
+            )
+        })
 }
 
 /// Renders the prompt sent to the coding agent for one selected issue.
@@ -172,5 +188,15 @@ mod tests {
         ] {
             assert_eq!(default_directives_for(agent), default_directives());
         }
+    }
+
+    #[test]
+    fn built_in_directives_follow_the_resolved_agent() {
+        let directives = directives_for_invocation(BUILT_IN_DIRECTIVES, Agent::Pi);
+        assert!(!directives.contains("sub-agents"));
+        assert_eq!(
+            directives_for_invocation("Custom directives.", Agent::Pi),
+            "Custom directives."
+        );
     }
 }

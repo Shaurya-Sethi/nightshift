@@ -8,8 +8,8 @@ use nightshift::agent::ProcessAgentRunner;
 use nightshift::cli::Args;
 use nightshift::git::{GitCliAdapter, GitOps};
 use nightshift::github::{GhCliAdapter, GithubIssues};
-use nightshift::orchestrator::{Runtime, WorkflowConfig, run};
-use nightshift::prompt::load_directives;
+use nightshift::orchestrator::{Runtime, run};
+use nightshift::prompt::{BUILT_IN_DIRECTIVES, load_directives};
 
 fn main() {
     let args = Args::parse();
@@ -41,24 +41,18 @@ fn main() {
         std::process::exit(1);
     }
 
-    let directives = match load_directives(args.prompt_file.as_deref(), args.agent) {
-        Ok(directives) => directives,
-        Err(e) => {
-            eprintln!("{}", e);
-            std::process::exit(1);
-        }
+    let directives = match args.prompt_file.as_deref() {
+        Some(prompt_file) => match load_directives(prompt_file) {
+            Ok(directives) => directives,
+            Err(e) => {
+                eprintln!("{}", e);
+                std::process::exit(1);
+            }
+        },
+        None => BUILT_IN_DIRECTIVES.to_string(),
     };
 
-    let config = WorkflowConfig {
-        prd: args.prd,
-        issue: args.issue,
-        repo: &repo,
-        base_branch: &args.base_branch,
-        dry_run: args.dry_run,
-        agent: args.agent,
-        model: args.model.as_deref(),
-        directives: &directives,
-    };
+    let config = args.to_workflow_config(&repo, &directives);
 
     let runtime = Runtime {
         github: &github,

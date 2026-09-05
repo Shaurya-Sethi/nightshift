@@ -99,7 +99,7 @@ Tests live next to the code they guard: `#[cfg(test)]` modules at the bottom of 
 **Secondary:** pure string helpers (e.g. GitHub remote slug parsing) and orchestrator loop tests via trait mocks (`GithubIssues`, `GitOps`, `AgentRunner`).
 
 **Intentionally out of scope:**
-- Testing `main` / clap flag parsing
+- Testing `main` / clap flag parsing, except pick-flag contracts in [`src/cli.rs`](src/cli.rs) (mutual exclusion of `--pick-efforts` / `--pick-models`, Preflight Dimension mapping, Cursor help text). Those are workflow contracts, not parser-string tests.
 - Adapter subprocess wiring
 - Network or auth-dependent flows
 - Snapshotting every function

@@ -6,6 +6,8 @@
 use std::io::{IsTerminal, Write};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use crate::invocation_profile::InvocationProfile;
+
 const BORDER_WIDTH: usize = 62;
 const BOLD: &str = "\x1b[1m";
 const DIM: &str = "\x1b[2m";
@@ -81,6 +83,31 @@ fn format_timestamp() -> String {
     format!("unix {secs}")
 }
 
+fn profile_fields(profile: InvocationProfile<'_>) -> String {
+    format!(
+        "agent {}  model {}  reasoning effort {}",
+        profile.agent.name(),
+        profile.model.unwrap_or("agent default"),
+        profile.reasoning_effort.unwrap_or("agent default"),
+    )
+}
+
+fn invocation_profile_line(profile: InvocationProfile<'_>) -> String {
+    format!("profile  {}", profile_fields(profile))
+}
+
+fn dry_run_assignment_line(
+    step: usize,
+    number: u32,
+    title: &str,
+    profile: InvocationProfile<'_>,
+) -> String {
+    format!(
+        "{step}. issue #{number}  {title}  {}",
+        profile_fields(profile)
+    )
+}
+
 /// Prints the session header when a PRD loop starts.
 pub fn session_start(prd: u32) {
     let mut out = std::io::stdout().lock();
@@ -112,6 +139,11 @@ impl IssueRun {
         let _ = writeln!(out, "{}", dim(line));
     }
 
+    /// Prints the resolved agent, model, and reasoning effort for this invocation.
+    pub fn invocation_profile(&self, profile: InvocationProfile<'_>) {
+        self.meta(&invocation_profile_line(profile));
+    }
+
     /// Prints the completion block with elapsed duration.
     pub fn complete(self) {
         let elapsed = format_elapsed(self.started.elapsed());
@@ -125,8 +157,12 @@ impl IssueRun {
     }
 }
 
-/// Prints the simulated solve order for a dry run, then the agent command preview.
-pub fn dry_run_planned_order(planned: &[(u32, &str)], blocked: &[(u32, &str)], agent_cmd: &str) {
+/// Prints the simulated solve order, resolved profile per issue, and command preview for a dry run.
+pub fn dry_run_planned_order(
+    planned: &[(u32, &str, InvocationProfile<'_>)],
+    blocked: &[(u32, &str)],
+    agent_cmd: &str,
+) {
     let mut out = std::io::stdout().lock();
     let _ = writeln!(out);
     let _ = print_banner(&mut out, &bold("Dry run  planned issue order"));
@@ -134,11 +170,11 @@ pub fn dry_run_planned_order(planned: &[(u32, &str)], blocked: &[(u32, &str)], a
     if planned.is_empty() {
         let _ = writeln!(out, "{}", dim("(no issues would be solved)"));
     } else {
-        for (step, (number, title)) in planned.iter().enumerate() {
+        for (step, (number, title, profile)) in planned.iter().enumerate() {
             let _ = writeln!(
                 out,
                 "{}",
-                dim(&format!("{}. issue #{number}  {title}", step + 1))
+                dim(&dry_run_assignment_line(step + 1, *number, title, *profile))
             );
         }
     }
@@ -182,6 +218,56 @@ pub fn git_hygiene(repo: &str, base_branch: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn invocation_profile_line_labels_agent_defaults() {
+        assert_eq!(
+            invocation_profile_line(crate::invocation_profile::InvocationProfile {
+                agent: crate::agent::Agent::Pi,
+                model: None,
+                reasoning_effort: None,
+            }),
+            "profile  agent pi  model agent default  reasoning effort agent default"
+        );
+        assert_eq!(
+            invocation_profile_line(crate::invocation_profile::InvocationProfile {
+                agent: crate::agent::Agent::Pi,
+                model: Some("gpt-5.4"),
+                reasoning_effort: Some("high"),
+            }),
+            "profile  agent pi  model gpt-5.4  reasoning effort high"
+        );
+    }
+
+    #[test]
+    fn dry_run_assignment_line_includes_each_resolved_profile() {
+        assert_eq!(
+            dry_run_assignment_line(
+                1,
+                10,
+                "Child 10",
+                crate::invocation_profile::InvocationProfile {
+                    agent: crate::agent::Agent::Pi,
+                    model: Some("issue-model"),
+                    reasoning_effort: Some("high"),
+                },
+            ),
+            "1. issue #10  Child 10  agent pi  model issue-model  reasoning effort high"
+        );
+        assert_eq!(
+            dry_run_assignment_line(
+                2,
+                11,
+                "Child 11",
+                crate::invocation_profile::InvocationProfile {
+                    agent: crate::agent::Agent::Pi,
+                    model: None,
+                    reasoning_effort: None,
+                },
+            ),
+            "2. issue #11  Child 11  agent pi  model agent default  reasoning effort agent default"
+        );
+    }
 
     #[test]
     fn format_elapsed_seconds_only() {

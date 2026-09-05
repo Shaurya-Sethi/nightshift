@@ -1,6 +1,7 @@
 //! Cross-platform integration tests for [`nightshift::agent::ProcessAgentRunner`].
 
 use nightshift::agent::{Agent, AgentRunner, ProcessAgentRunner};
+use nightshift::invocation_profile::InvocationProfile;
 use std::env;
 use std::ffi::OsString;
 use std::fs;
@@ -93,6 +94,44 @@ fn install_fake_claude(mode: &str, configure: impl FnOnce(&Path)) -> (TestComman
 }
 
 #[test]
+fn process_runner_passes_reasoning_effort_through_unchanged() {
+    let _lock = env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let (_env, temp_dir) = install_fake_claude("passthrough", |temp_dir| {
+        let args_file = temp_dir.join("args.txt");
+        unsafe {
+            env::set_var("NIGHTSHIFT_FAKE_ARGS_FILE", &args_file);
+        }
+    });
+    let args_file = temp_dir.join("args.txt");
+
+    ProcessAgentRunner
+        .run(
+            InvocationProfile {
+                agent: Agent::Claude,
+                model: Some("claude-sonnet-does-not-exist"),
+                reasoning_effort: Some("high"),
+            },
+            "prompt",
+        )
+        .expect("supported agents should pass reasoning effort through unchanged");
+
+    let args = fs::read_to_string(args_file).expect("args file should be written");
+    assert_eq!(
+        args.lines().collect::<Vec<_>>(),
+        vec![
+            "-p",
+            "--dangerously-skip-permissions",
+            "--model",
+            "claude-sonnet-does-not-exist",
+            "--effort",
+            "high",
+        ]
+    );
+}
+
+#[test]
 fn process_runner_passes_supported_model_through_unchanged() {
     let _lock = env_lock()
         .lock()
@@ -107,8 +146,11 @@ fn process_runner_passes_supported_model_through_unchanged() {
 
     ProcessAgentRunner
         .run(
-            Agent::Claude,
-            Some("claude-sonnet-does-not-exist"),
+            InvocationProfile {
+                agent: Agent::Claude,
+                model: Some("claude-sonnet-does-not-exist"),
+                reasoning_effort: None,
+            },
             "prompt",
         )
         .expect("supported agents should pass --model through unchanged");
@@ -133,11 +175,19 @@ fn process_runner_surfaces_exit_status_and_model_hint() {
     let (_env, _temp_dir) = install_fake_claude("stderr_fail", |_| {});
 
     let err = ProcessAgentRunner
-        .run(Agent::Claude, Some("sonnet"), "prompt")
+        .run(
+            InvocationProfile {
+                agent: Agent::Claude,
+                model: Some("sonnet"),
+                reasoning_effort: Some("high"),
+            },
+            "prompt",
+        )
         .expect_err("agent failure should bubble up")
         .to_string();
     assert!(err.contains("exited with status"));
     assert!(err.contains("The agent may have rejected --model sonnet"));
+    assert!(err.contains("The agent may have rejected --reasoning-effort high"));
     assert!(!err.contains("cli said no"));
 }
 
@@ -149,7 +199,14 @@ fn process_runner_does_not_mask_early_model_rejection_as_stdin_failure() {
     let (_env, _temp_dir) = install_fake_claude("early_close", |_| {});
 
     let err = ProcessAgentRunner
-        .run(Agent::Claude, Some("sonnet"), &"x".repeat(1_000_000))
+        .run(
+            InvocationProfile {
+                agent: Agent::Claude,
+                model: Some("sonnet"),
+                reasoning_effort: None,
+            },
+            &"x".repeat(1_000_000),
+        )
         .expect_err("early rejection should bubble up")
         .to_string();
     assert!(err.contains("exited with status"));
@@ -166,6 +223,13 @@ fn process_runner_completes_with_silent_noisy_agent() {
     let (_env, _temp_dir) = install_fake_claude("noisy_success", |_| {});
 
     ProcessAgentRunner
-        .run(Agent::Claude, None, &"x".repeat(64 * 1024))
+        .run(
+            InvocationProfile {
+                agent: Agent::Claude,
+                model: None,
+                reasoning_effort: None,
+            },
+            &"x".repeat(64 * 1024),
+        )
         .expect("noisy agent stdout/stderr on null should not hang the runner");
 }

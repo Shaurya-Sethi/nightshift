@@ -212,6 +212,10 @@ pub(crate) enum WatchEvent {
     Completed { issue: u32 },
     /// Run stopped with a readable error.
     Failed { issue: u32, message: String },
+    /// Work returned an error. Completes the live session so the board can
+    /// dismiss. Does not replace an issue-specific [`Self::Failed`] already
+    /// applied, and does not attribute a failing issue of its own.
+    Ended { message: String },
     /// Planned work finished or stop was honored.
     Done,
 }
@@ -565,6 +569,8 @@ impl BoardState {
 
     /// Applies one orchestration event. Completed rows are only created from
     /// [`WatchEvent::Completed`], never from a missing plan row.
+    /// [`WatchEvent::Ended`] finishes the session without clobbering an
+    /// issue-specific [`Phase::Failed`].
     pub(crate) fn apply(&mut self, event: WatchEvent) {
         match event {
             WatchEvent::Session { prd, repo, branch } => {
@@ -592,6 +598,15 @@ impl BoardState {
             WatchEvent::Failed { issue, message } => {
                 self.mark_status(issue, IssueStatus::Failed);
                 self.phase = Phase::Failed { issue, message };
+                self.clear_stop_notice();
+            }
+            WatchEvent::Ended { message } => {
+                if !self.can_dismiss() {
+                    self.phase = Phase::Failed {
+                        issue: self.prd,
+                        message,
+                    };
+                }
                 self.clear_stop_notice();
             }
             WatchEvent::Done => {
@@ -840,6 +855,9 @@ fn tick_elapsed(state: &mut BoardState, started: Instant) {
     }
 }
 
+/// Success emits [`WatchEvent::Done`]. Errors emit [`WatchEvent::Ended`] so
+/// the board can dismiss without replacing an issue-specific failure. A panic
+/// still emits [`WatchEvent::Failed`] on the PRD and asks the UI to abort.
 fn emit_after_work<T>(
     watch: &dyn Watch,
     prd: u32,
@@ -851,8 +869,7 @@ fn emit_after_work<T>(
             false
         }
         Ok(Err(err)) => {
-            watch.emit(WatchEvent::Failed {
-                issue: prd,
+            watch.emit(WatchEvent::Ended {
                 message: err.to_string(),
             });
             false
@@ -1557,6 +1574,16 @@ mod tests {
         }
     }
 
+    fn apply_work_error(state: &mut BoardState, prd: u32, message: &str) {
+        let watch = WatchLog::new();
+        let err: Box<dyn std::error::Error> = message.into();
+        let work: std::thread::Result<Result<(), Box<dyn std::error::Error>>> = Ok(Err(err));
+        emit_after_work(&watch, prd, &work);
+        for event in watch.events() {
+            state.apply(event);
+        }
+    }
+
     #[test]
     fn live_q_requests_stop_while_running_and_dismisses_when_done() {
         let mut state = BoardState::live_run(42, "owner/repo".into(), "main".into());
@@ -1804,16 +1831,98 @@ mod tests {
         let work: std::thread::Result<Result<(), Box<dyn std::error::Error>>> = Ok(Err(err));
         assert!(!emit_after_work(&watch, 42, &work));
         match watch.events().last() {
-            Some(WatchEvent::Failed { issue: 42, message }) => {
+            Some(WatchEvent::Ended { message }) => {
                 assert!(message.contains("failed to parse issue list"), "{message}");
             }
-            other => panic!("expected failed, got {other:?}"),
+            other => panic!("expected ended, got {other:?}"),
         }
         assert!(
             !watch
                 .events()
                 .iter()
                 .any(|event| matches!(event, WatchEvent::Done))
+        );
+    }
+
+    #[test]
+    fn apply_agent_failure_then_finalization_keeps_child_phase() {
+        let mut state = BoardState::live_run(1, "tui-offline/preview".into(), "main".into());
+        state.apply(WatchEvent::Roster {
+            planned: vec![roster(10, "Child")],
+            blocked: vec![],
+        });
+        state.apply(WatchEvent::Running { issue: 10 });
+        let message = "nightshift: agent command exited with status 1.";
+        state.apply(WatchEvent::Failed {
+            issue: 10,
+            message: message.to_string(),
+        });
+        apply_work_error(&mut state, 1, message);
+        match &state.phase {
+            Phase::Failed {
+                issue: 10,
+                message: got,
+            } => {
+                assert!(got.contains("exited with status"), "{got}");
+            }
+            other => panic!("expected failed #10, got {other:?}"),
+        }
+        assert_eq!(state.issues[0].number, 10);
+        assert_eq!(state.issues[0].status, IssueStatus::Failed);
+        assert_eq!(
+            state.handle_key(key(KeyCode::Char('q'))),
+            BoardCommand::Quit
+        );
+    }
+
+    #[test]
+    fn apply_still_open_then_finalization_keeps_child_phase() {
+        let mut state = BoardState::live_run(1, "tui-offline/preview".into(), "main".into());
+        state.apply(WatchEvent::Roster {
+            planned: vec![roster(10, "Child")],
+            blocked: vec![],
+        });
+        state.apply(WatchEvent::Verify { issue: 10 });
+        let message = "nightshift: agent exited successfully, but issue #10 is still open on GitHub.\n                Exiting.";
+        state.apply(WatchEvent::Failed {
+            issue: 10,
+            message: message.to_string(),
+        });
+        apply_work_error(&mut state, 1, message);
+        match &state.phase {
+            Phase::Failed {
+                issue: 10,
+                message: got,
+            } => {
+                assert!(got.contains("still open"), "{got}");
+            }
+            other => panic!("expected failed #10, got {other:?}"),
+        }
+        assert_eq!(state.issues[0].number, 10);
+        assert_eq!(state.issues[0].status, IssueStatus::Failed);
+        assert_eq!(
+            state.handle_key(key(KeyCode::Char('q'))),
+            BoardCommand::Quit
+        );
+    }
+
+    #[test]
+    fn finalization_without_prior_failed_is_dismissible() {
+        let mut state = BoardState::live_run(1, "owner/repo".into(), "main".into());
+        apply_work_error(
+            &mut state,
+            1,
+            "nightshift: failed to parse issue list: expected ident",
+        );
+        match &state.phase {
+            Phase::Failed { issue: 1, message } => {
+                assert!(message.contains("failed to parse issue list"), "{message}");
+            }
+            other => panic!("expected failed #1, got {other:?}"),
+        }
+        assert_eq!(
+            state.handle_key(key(KeyCode::Char('q'))),
+            BoardCommand::Quit
         );
     }
 

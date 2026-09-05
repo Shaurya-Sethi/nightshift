@@ -13,11 +13,47 @@ use std::path::{Path, PathBuf};
 use crate::agent::Agent;
 use crate::github::GithubIssue;
 
-/// Marker indicating that built-in directives must follow the resolved agent.
+/// Run-wide maintainer-directive source for one Nightshift process.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DirectivePolicy<'a> {
+    /// `default_directives_for(resolved_agent)` at invoke time.
+    BuiltIn,
+    /// File text used as-is; built-ins are not injected.
+    Replace(&'a str),
+    /// `default_directives_for(resolved_agent)` plus a blank line plus this extra.
+    Append(&'a str),
+}
+
+/// Whether a picked prompt file is appended to built-ins or used as a full replace.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PromptMode {
+    /// `default_directives_for(resolved_agent)` plus a blank line plus the file.
+    Append,
+    /// File text used as-is; built-ins are not injected.
+    Replace,
+}
+
+/// Snapshot of a `--pick-prompts` file, loaded before confirm.
 ///
-/// The CLI uses this only when no prompt file is supplied. Any other value is
-/// a shared explicit override for every invocation in the run.
-pub const BUILT_IN_DIRECTIVES: &str = "\0nightshift built-in directives";
+/// `contents` is already trimmed by [`load_directives`]. The path is not stored;
+/// the loop never re-reads the file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PerIssuePrompt {
+    /// Append vs replace for this issue. Run-wide policy is ignored when this
+    /// struct is present.
+    pub mode: PromptMode,
+    /// Trimmed file text snapshotted at preflight.
+    pub contents: String,
+}
+
+impl PerIssuePrompt {
+    fn as_policy(&self) -> DirectivePolicy<'_> {
+        match self.mode {
+            PromptMode::Append => DirectivePolicy::Append(&self.contents),
+            PromptMode::Replace => DirectivePolicy::Replace(&self.contents),
+        }
+    }
+}
 
 /// Returns the built-in maintainer directives for agents that support the full workflow.
 ///
@@ -48,23 +84,33 @@ pub fn default_directives_for(agent: Agent) -> String {
     }
 }
 
-/// Resolves shared or built-in directives for one invocation.
+/// Resolves run-wide or per-issue directives for one invocation.
 ///
-/// [`BUILT_IN_DIRECTIVES`] selects the resolved agent's built-ins. Any other
-/// value is returned unchanged, preserving one `--prompt-file` override for
-/// the whole run.
-pub fn directives_for_invocation<'a>(directives: &'a str, agent: Agent) -> Cow<'a, str> {
-    if directives == BUILT_IN_DIRECTIVES {
-        Cow::Owned(default_directives_for(agent))
-    } else {
-        Cow::Borrowed(directives)
+/// A per-issue snapshot fully overrides the run-wide policy. [`DirectivePolicy::BuiltIn`]
+/// and [`DirectivePolicy::Append`] use [`default_directives_for`] for the resolved
+/// agent. [`DirectivePolicy::Replace`] returns the file text unchanged.
+pub fn directives_for_invocation<'a>(
+    run: DirectivePolicy<'a>,
+    per_issue: Option<&'a PerIssuePrompt>,
+    agent: Agent,
+) -> Cow<'a, str> {
+    let policy = match per_issue {
+        Some(item) => item.as_policy(),
+        None => run,
+    };
+    match policy {
+        DirectivePolicy::BuiltIn => Cow::Owned(default_directives_for(agent)),
+        DirectivePolicy::Replace(text) => Cow::Borrowed(text),
+        DirectivePolicy::Append(extra) => {
+            Cow::Owned(format!("{}\n\n{}", default_directives_for(agent), extra))
+        }
     }
 }
 
 /// Loads maintainer directives from a file.
 ///
-/// File contents are trimmed before being appended to the rendered issue prompt.
-/// A supplied file overrides agent-specific built-in directives for every issue.
+/// File contents are trimmed and returned. This does not choose replace versus
+/// append; callers apply a [`DirectivePolicy`].
 ///
 /// # Errors
 ///
@@ -191,11 +237,65 @@ mod tests {
 
     #[test]
     fn built_in_directives_follow_the_resolved_agent() {
-        let directives = directives_for_invocation(BUILT_IN_DIRECTIVES, Agent::Pi);
+        let directives = directives_for_invocation(DirectivePolicy::BuiltIn, None, Agent::Pi);
         assert!(!directives.contains("sub-agents"));
         assert_eq!(
-            directives_for_invocation("Custom directives.", Agent::Pi),
+            directives_for_invocation(
+                DirectivePolicy::Replace("Custom directives."),
+                None,
+                Agent::Pi
+            ),
             "Custom directives."
         );
+    }
+
+    #[test]
+    fn append_concatenates_with_pi_built_ins() {
+        let directives =
+            directives_for_invocation(DirectivePolicy::Append("extra"), None, Agent::Pi);
+        assert_eq!(
+            directives.as_ref(),
+            format!("{}\n\nextra", default_directives_for(Agent::Pi))
+        );
+        assert!(!directives.contains("sub-agents"));
+    }
+
+    #[test]
+    fn replace_ignores_built_ins() {
+        let directives =
+            directives_for_invocation(DirectivePolicy::Replace("Custom only."), None, Agent::Pi);
+        assert_eq!(directives.as_ref(), "Custom only.");
+        assert!(!directives.contains("git checkout -b"));
+    }
+
+    #[test]
+    fn blank_per_item_uses_run_wide() {
+        assert_eq!(
+            directives_for_invocation(DirectivePolicy::Replace("F"), None, Agent::Pi).as_ref(),
+            "F"
+        );
+        assert_eq!(
+            directives_for_invocation(DirectivePolicy::Append("F"), None, Agent::Pi).as_ref(),
+            format!("{}\n\nF", default_directives_for(Agent::Pi))
+        );
+        assert_eq!(
+            directives_for_invocation(DirectivePolicy::BuiltIn, None, Agent::Pi).as_ref(),
+            default_directives_for(Agent::Pi)
+        );
+    }
+
+    #[test]
+    fn per_item_append_ignores_run_wide_replace() {
+        let item = PerIssuePrompt {
+            mode: PromptMode::Append,
+            contents: "row-extra".into(),
+        };
+        let directives =
+            directives_for_invocation(DirectivePolicy::Replace("run-wide"), Some(&item), Agent::Pi);
+        assert_eq!(
+            directives.as_ref(),
+            format!("{}\n\nrow-extra", default_directives_for(Agent::Pi))
+        );
+        assert!(!directives.contains("run-wide"));
     }
 }

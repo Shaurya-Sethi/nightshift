@@ -9,7 +9,7 @@ use nightshift::cli::Args;
 use nightshift::git::{GitCliAdapter, GitOps};
 use nightshift::github::{GhCliAdapter, GithubIssues};
 use nightshift::orchestrator::{Runtime, run};
-use nightshift::prompt::{BUILT_IN_DIRECTIVES, load_directives};
+use nightshift::prompt::{DirectivePolicy, load_directives};
 
 fn main() {
     let args = Args::parse();
@@ -41,18 +41,27 @@ fn main() {
         std::process::exit(1);
     }
 
-    let directives = match args.prompt_file.as_deref() {
-        Some(prompt_file) => match load_directives(prompt_file) {
-            Ok(directives) => directives,
-            Err(e) => {
-                eprintln!("{}", e);
+    let loaded = args
+        .prompt_file
+        .as_deref()
+        .or(args.append_prompt_file.as_deref())
+        .map(|path| {
+            load_directives(path).unwrap_or_else(|e| {
+                eprintln!("{e}");
                 std::process::exit(1);
-            }
-        },
-        None => BUILT_IN_DIRECTIVES.to_string(),
+            })
+        });
+    let directive_policy = match (
+        args.prompt_file.is_some(),
+        args.append_prompt_file.is_some(),
+        loaded.as_deref(),
+    ) {
+        (true, false, Some(text)) => DirectivePolicy::Replace(text),
+        (false, true, Some(text)) => DirectivePolicy::Append(text),
+        (false, false, None) => DirectivePolicy::BuiltIn,
+        _ => unreachable!("clap rejects combining --prompt-file with --append-prompt-file"),
     };
-
-    let config = args.to_workflow_config(&repo, &directives);
+    let config = args.to_workflow_config(&repo, directive_policy);
 
     let runtime = Runtime {
         github: &github,

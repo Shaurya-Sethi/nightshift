@@ -13,7 +13,9 @@ use crate::invocation_profile::{
     PreflightDimensions, RunEphemeralProfileMap, WholeRunInvocationDefaults, resolve,
 };
 use crate::parser::plan_order;
-use crate::prompt::{directives_for_invocation, render_issue_prompt, save_prompt_copy};
+use crate::prompt::{
+    DirectivePolicy, directives_for_invocation, render_issue_prompt, save_prompt_copy,
+};
 use std::io::IsTerminal;
 
 /// Configuration for one nightshift PRD loop.
@@ -34,8 +36,8 @@ pub struct WorkflowConfig<'a> {
     pub per_issue_profiles: RunEphemeralProfileMap,
     /// Invocation Profile Preflight columns collected after plan simulation.
     pub preflight_dimensions: PreflightDimensions,
-    /// Maintainer instructions appended to each generated issue prompt.
-    pub directives: &'a str,
+    /// Run-wide maintainer-directive policy applied to each generated issue prompt unless a per-issue prompt override is present.
+    pub directive_policy: DirectivePolicy<'a>,
 }
 
 /// Runtime adapters used by [`run`].
@@ -63,7 +65,7 @@ fn run_with_preflight_io(
     if dimensions.efforts && dimensions.models {
         return Err("nightshift: --pick-efforts and --pick-models are mutually exclusive".into());
     }
-    let preflight_enabled = dimensions.agents || dimensions.efforts || dimensions.models;
+    let preflight_enabled = dimensions.requested();
     if !dimensions.agents && dimensions.efforts {
         default_agent.supported_reasoning_efforts().ok_or_else(|| {
             format!(
@@ -142,7 +144,12 @@ fn run_with_preflight_io(
         let issue_run = console::IssueRun::begin(selected_issue.number, &selected_issue.title);
         issue_run.invocation_profile(profile);
 
-        let directives = directives_for_invocation(config.directives, profile.agent);
+        let per_issue = config
+            .per_issue_profiles
+            .get(&selected_issue.number)
+            .and_then(|row| row.prompt.as_ref());
+        let directives =
+            directives_for_invocation(config.directive_policy, per_issue, profile.agent);
         let final_prompt =
             render_issue_prompt(config.repo, &prd_body, &selected_issue, directives.as_ref());
 
@@ -200,6 +207,7 @@ fn run_with_preflight_io(
 /// #     PreflightDimensions, RunEphemeralProfileMap, WholeRunInvocationDefaults,
 /// # };
 /// # use nightshift::orchestrator::{Runtime, WorkflowConfig, run};
+/// # use nightshift::prompt::DirectivePolicy;
 /// # let github = GhCliAdapter;
 /// # let git = GitCliAdapter::for_repo("owner/repo")?;
 /// # let agent_runner = ProcessAgentRunner;
@@ -216,7 +224,7 @@ fn run_with_preflight_io(
 ///     },
 ///     per_issue_profiles: RunEphemeralProfileMap::new(),
 ///     preflight_dimensions: PreflightDimensions::default(),
-///     directives: "Run tests before opening a PR.",
+///     directive_policy: DirectivePolicy::Replace("Run tests before opening a PR."),
 /// };
 /// let runtime = Runtime {
 ///     github: &github,
@@ -231,10 +239,7 @@ pub fn run(
     config: WorkflowConfig<'_>,
     runtime: Runtime<'_>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    if !config.preflight_dimensions.agents
-        && !config.preflight_dimensions.efforts
-        && !config.preflight_dimensions.models
-    {
+    if !config.preflight_dimensions.requested() {
         return run_with_preflight_io(config, runtime, None);
     }
 
@@ -328,8 +333,15 @@ fn run_dry_run(
             config.whole_run_defaults,
             config.per_issue_profiles.get(&first.number),
         );
-        let directives = directives_for_invocation(config.directives, profile.agent);
+        let per_issue = config
+            .per_issue_profiles
+            .get(&first.number)
+            .and_then(|row| row.prompt.as_ref());
+        let directives =
+            directives_for_invocation(config.directive_policy, per_issue, profile.agent);
         let final_prompt = render_issue_prompt(config.repo, prd_body, first, directives.as_ref());
+        #[cfg(test)]
+        LAST_RENDERED_PROMPT.with(|slot| *slot.borrow_mut() = Some(final_prompt.clone()));
         console::dry_run_prompt(&final_prompt);
     }
 
@@ -348,6 +360,12 @@ fn complete_without_candidates(prd: u32, min_issue: u32, has_open_children: bool
 }
 
 #[cfg(test)]
+thread_local! {
+    static LAST_RENDERED_PROMPT: std::cell::RefCell<Option<String>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::agent::{Agent, AgentRunner};
@@ -356,7 +374,7 @@ mod tests {
     use crate::invocation_profile::{
         InvocationProfile, PerIssueInvocationOverride, RunEphemeralProfileMap,
     };
-    use crate::prompt::BUILT_IN_DIRECTIVES;
+    use crate::prompt::{PerIssuePrompt, PromptMode, default_directives_for};
     use serde_json::json;
     use std::cell::{Cell, RefCell};
     use std::collections::{HashMap, HashSet};
@@ -406,7 +424,7 @@ mod tests {
         whole_run_defaults: WholeRunInvocationDefaults<'a>,
         per_issue_profiles: RunEphemeralProfileMap,
         preflight_dimensions: PreflightDimensions,
-        directives: &'a str,
+        directive_policy: DirectivePolicy<'a>,
     ) -> WorkflowConfig<'a> {
         WorkflowConfig {
             prd: 42,
@@ -417,7 +435,7 @@ mod tests {
             whole_run_defaults,
             per_issue_profiles,
             preflight_dimensions,
-            directives,
+            directive_policy,
         }
     }
 
@@ -591,7 +609,7 @@ mod tests {
             defaults(Agent::Cursor, None, None),
             RunEphemeralProfileMap::new(),
             PreflightDimensions::default(),
-            "test directives",
+            DirectivePolicy::Replace("test directives"),
         );
         run(config, runtime(&github, &agent)).unwrap();
         assert!(!agent.ran.get());
@@ -610,7 +628,7 @@ mod tests {
             defaults(Agent::Cursor, Some("gpt-5.2"), None),
             RunEphemeralProfileMap::new(),
             PreflightDimensions::default(),
-            "test directives",
+            DirectivePolicy::Replace("test directives"),
         );
         run(config, runtime(&github, &agent)).unwrap();
         assert!(!agent.ran.get());
@@ -634,6 +652,7 @@ mod tests {
                     agent: Some(Agent::Codex),
                     model: Some("issue-one-model".to_string()),
                     reasoning_effort: Some("high".to_string()),
+                    ..Default::default()
                 },
             ),
             (
@@ -642,6 +661,7 @@ mod tests {
                     agent: None,
                     model: Some("issue-two-model".to_string()),
                     reasoning_effort: Some("low".to_string()),
+                    ..Default::default()
                 },
             ),
         ]);
@@ -686,7 +706,7 @@ mod tests {
             defaults(Agent::Cursor, Some("gpt-5.2"), None),
             RunEphemeralProfileMap::new(),
             PreflightDimensions::default(),
-            "test directives",
+            DirectivePolicy::Replace("test directives"),
         );
         let err = run(config, runtime(&github, &agent)).unwrap_err();
         assert!(err.to_string().contains("mock agent stopped"));
@@ -712,6 +732,7 @@ mod tests {
                 agent: None,
                 model: Some("issue-model".to_string()),
                 reasoning_effort: None,
+                ..Default::default()
             },
         )]);
         let config = workflow(
@@ -720,7 +741,7 @@ mod tests {
             defaults(Agent::Pi, Some("run-model"), Some("medium")),
             profiles,
             PreflightDimensions::default(),
-            "test directives",
+            DirectivePolicy::Replace("test directives"),
         );
 
         let error = run(config, runtime(&github, &agent))
@@ -752,6 +773,7 @@ mod tests {
                 agent: None,
                 model: Some("other-issue-model".to_string()),
                 reasoning_effort: Some("low".to_string()),
+                ..Default::default()
             },
         )]);
         let config = workflow(
@@ -760,7 +782,7 @@ mod tests {
             defaults(Agent::Pi, Some("run-model"), Some("medium")),
             profiles,
             PreflightDimensions::default(),
-            "test directives",
+            DirectivePolicy::Replace("test directives"),
         );
 
         let error = run(config, runtime(&github, &agent))
@@ -785,6 +807,7 @@ mod tests {
                     agent: None,
                     model: Some("issue-one-model".to_string()),
                     reasoning_effort: None,
+                    ..Default::default()
                 },
             ),
             (
@@ -793,6 +816,7 @@ mod tests {
                     agent: None,
                     model: Some("issue-two-model".to_string()),
                     reasoning_effort: None,
+                    ..Default::default()
                 },
             ),
         ]);
@@ -802,7 +826,7 @@ mod tests {
             defaults(Agent::Pi, Some("run-model"), None),
             profiles,
             PreflightDimensions::default(),
-            "test directives",
+            DirectivePolicy::Replace("test directives"),
         );
 
         run(config, runtime(&github, &agent)).unwrap();
@@ -825,7 +849,7 @@ mod tests {
             defaults(Agent::Cursor, None, None),
             RunEphemeralProfileMap::new(),
             PreflightDimensions::default(),
-            "test directives",
+            DirectivePolicy::Replace("test directives"),
         );
         let err = run(config, runtime(&github, &agent)).unwrap_err();
         assert!(err.to_string().contains("PRD issue 42 not found"));
@@ -841,7 +865,7 @@ mod tests {
             defaults(Agent::Cursor, None, None),
             RunEphemeralProfileMap::new(),
             PreflightDimensions::default(),
-            "test directives",
+            DirectivePolicy::Replace("test directives"),
         );
         run(config, runtime(&github, &agent)).unwrap();
         assert!(!agent.ran.get());
@@ -883,7 +907,7 @@ mod tests {
                 defaults(agent, model, effort),
                 RunEphemeralProfileMap::new(),
                 PreflightDimensions::default(),
-                "test directives",
+                DirectivePolicy::Replace("test directives"),
             );
             let error = run(config, runtime(&github, &runner))
                 .expect_err("illegal whole-run profile must fail at startup")
@@ -905,11 +929,10 @@ mod tests {
                 defaults(agent, None, None),
                 RunEphemeralProfileMap::new(),
                 PreflightDimensions {
-                    agents: false,
                     efforts: true,
-                    models: false,
+                    ..PreflightDimensions::default()
                 },
-                "test directives",
+                DirectivePolicy::Replace("test directives"),
             );
             let error = run_with_preflight_io(config, runtime(&github, &runner), None)
                 .expect_err("incapable agent must reject --pick-efforts")
@@ -930,11 +953,10 @@ mod tests {
             defaults(Agent::Antigravity, None, None),
             RunEphemeralProfileMap::new(),
             PreflightDimensions {
-                agents: false,
-                efforts: false,
                 models: true,
+                ..PreflightDimensions::default()
             },
-            "test directives",
+            DirectivePolicy::Replace("test directives"),
         );
         let error = run_with_preflight_io(config, runtime(&github, &runner), None)
             .expect_err("antigravity must reject --pick-models")
@@ -958,11 +980,10 @@ mod tests {
             defaults(Agent::Pi, None, None),
             RunEphemeralProfileMap::new(),
             PreflightDimensions {
-                agents: false,
                 efforts: true,
-                models: false,
+                ..PreflightDimensions::default()
             },
-            "test directives",
+            DirectivePolicy::Replace("test directives"),
         );
         let error =
             run_with_preflight_io(config, runtime(&github, &runner), Some(&mut preflight_io))
@@ -990,10 +1011,9 @@ mod tests {
             RunEphemeralProfileMap::new(),
             PreflightDimensions {
                 agents: true,
-                efforts: false,
-                models: false,
+                ..PreflightDimensions::default()
             },
-            BUILT_IN_DIRECTIVES,
+            DirectivePolicy::BuiltIn,
         );
 
         run_with_preflight_io(config, runtime(&github, &agent), Some(&mut preflight_io))
@@ -1031,11 +1051,10 @@ mod tests {
             defaults(Agent::Pi, None, None),
             RunEphemeralProfileMap::new(),
             PreflightDimensions {
-                agents: false,
                 efforts: true,
-                models: false,
+                ..PreflightDimensions::default()
             },
-            "test directives",
+            DirectivePolicy::Replace("test directives"),
         );
 
         let error =
@@ -1066,11 +1085,10 @@ mod tests {
             defaults(Agent::Pi, None, None),
             RunEphemeralProfileMap::new(),
             PreflightDimensions {
-                agents: false,
-                efforts: false,
                 models: true,
+                ..PreflightDimensions::default()
             },
-            "test directives",
+            DirectivePolicy::Replace("test directives"),
         );
 
         run_with_preflight_io(config, runtime(&github, &agent), Some(&mut preflight_io))
@@ -1097,11 +1115,10 @@ mod tests {
             defaults(Agent::Pi, None, None),
             RunEphemeralProfileMap::new(),
             PreflightDimensions {
-                agents: false,
                 efforts: true,
-                models: false,
+                ..PreflightDimensions::default()
             },
-            "test directives",
+            DirectivePolicy::Replace("test directives"),
         );
 
         let error =
@@ -1110,5 +1127,164 @@ mod tests {
                 .to_string();
         assert!(error.contains("Preflight aborted"));
         assert!(!agent.ran.get());
+    }
+
+    #[test]
+    fn prompt_file_without_pick_flags_replaces_directives_for_every_issue() {
+        let github = mock_github(
+            graph(&[child(10, 42, &[]), child(11, 42, &[])]),
+            HashMap::from([(42, "Product requirements".into())]),
+        );
+        let agent = recording_closer(&github.closed);
+        let config = workflow(
+            1,
+            false,
+            defaults(Agent::Pi, None, None),
+            RunEphemeralProfileMap::new(),
+            PreflightDimensions::default(),
+            DirectivePolicy::Replace("F"),
+        );
+
+        run(config, runtime(&github, &agent)).unwrap();
+        let prompts = agent.prompts.borrow();
+        assert_eq!(prompts.len(), 2);
+        for prompt in prompts.iter() {
+            assert!(prompt.contains("F"));
+            assert!(!prompt.contains("gh pr create"));
+        }
+    }
+
+    #[test]
+    fn picked_prompt_replace_and_append_used_at_invoke() {
+        let github = mock_github(
+            graph(&[child(10, 42, &[]), child(11, 42, &[])]),
+            HashMap::from([(42, "Product requirements".into())]),
+        );
+        let agent = recording_closer(&github.closed);
+        let profiles = RunEphemeralProfileMap::from([
+            (
+                10,
+                PerIssueInvocationOverride {
+                    prompt: Some(PerIssuePrompt {
+                        mode: PromptMode::Replace,
+                        contents: "row-replace-only".into(),
+                    }),
+                    ..Default::default()
+                },
+            ),
+            (
+                11,
+                PerIssueInvocationOverride {
+                    prompt: Some(PerIssuePrompt {
+                        mode: PromptMode::Append,
+                        contents: "row-extra".into(),
+                    }),
+                    ..Default::default()
+                },
+            ),
+        ]);
+        let config = workflow(
+            1,
+            false,
+            defaults(Agent::Pi, None, None),
+            profiles,
+            PreflightDimensions::default(),
+            DirectivePolicy::Replace("run-wide-should-not-appear"),
+        );
+
+        run(config, runtime(&github, &agent)).unwrap();
+        let prompts = agent.prompts.borrow();
+        assert!(prompts[0].contains("row-replace-only"));
+        assert!(!prompts[0].contains("run-wide-should-not-appear"));
+        assert!(!prompts[0].contains("gh pr create"));
+        assert!(prompts[1].contains("row-extra"));
+        assert!(prompts[1].contains(&default_directives_for(Agent::Pi)));
+        assert!(!prompts[1].contains("run-wide-should-not-appear"));
+    }
+
+    #[test]
+    fn dry_run_first_issue_prompt_uses_seeded_per_issue_prompt() {
+        LAST_RENDERED_PROMPT.with(|slot| *slot.borrow_mut() = None);
+        let github = mock_github(
+            graph(&[child(10, 42, &[])]),
+            HashMap::from([(42, "Product requirements".into())]),
+        );
+        let agent = idle_agent();
+        let profiles = RunEphemeralProfileMap::from([(
+            10,
+            PerIssueInvocationOverride {
+                prompt: Some(PerIssuePrompt {
+                    mode: PromptMode::Append,
+                    contents: "row-extra".into(),
+                }),
+                ..Default::default()
+            },
+        )]);
+        let config = workflow(
+            1,
+            true,
+            defaults(Agent::Pi, None, None),
+            profiles,
+            PreflightDimensions::default(),
+            DirectivePolicy::Replace("run-wide-should-not-appear"),
+        );
+
+        run(config, runtime(&github, &agent)).unwrap();
+        assert!(!agent.ran.get());
+        let prompt = LAST_RENDERED_PROMPT
+            .with(|slot| slot.borrow().clone())
+            .expect("dry-run should render the first-issue prompt");
+        assert!(prompt.contains(&format!(
+            "{}\n\nrow-extra",
+            default_directives_for(Agent::Pi)
+        )));
+        assert!(!prompt.contains("run-wide-should-not-appear"));
+    }
+
+    #[test]
+    fn non_tty_pick_prompts_fails_before_any_github_call() {
+        let github = mock_github("[]", HashMap::new());
+        let runner = idle_agent();
+        let mut input = Cursor::new(b"".as_slice());
+        let mut output = Vec::new();
+        let mut preflight_io = crate::preflight::Io::new(false, &mut input, &mut output);
+        let config = workflow(
+            1,
+            false,
+            defaults(Agent::Pi, None, None),
+            RunEphemeralProfileMap::new(),
+            PreflightDimensions {
+                prompts: true,
+                ..PreflightDimensions::default()
+            },
+            DirectivePolicy::BuiltIn,
+        );
+        let error =
+            run_with_preflight_io(config, runtime(&github, &runner), Some(&mut preflight_io))
+                .expect_err("non-terminal pick-prompts must fail")
+                .to_string();
+        assert!(error.contains("--pick-prompts"));
+        assert!(error.contains("--reasoning-effort"));
+        assert_no_github_calls(&github);
+        assert!(!runner.ran.get());
+
+        let github = mock_github("[]", HashMap::new());
+        let runner = idle_agent();
+        let config = workflow(
+            1,
+            false,
+            defaults(Agent::Pi, None, None),
+            RunEphemeralProfileMap::new(),
+            PreflightDimensions {
+                prompts: true,
+                ..PreflightDimensions::default()
+            },
+            DirectivePolicy::BuiltIn,
+        );
+        let error = run_with_preflight_io(config, runtime(&github, &runner), None)
+            .expect_err("pick-prompts alone must not skip preflight I/O")
+            .to_string();
+        assert!(error.contains("Invocation Profile Preflight requires terminal I/O"));
+        assert_no_github_calls(&github);
     }
 }

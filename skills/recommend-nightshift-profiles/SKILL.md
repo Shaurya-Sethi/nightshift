@@ -50,7 +50,7 @@ nightshift --prd <prd_id> --agent <agent> --dry-run
 # optional: --repo owner/name
 ```
 
-**Never** pass `--pick-agents`, `--pick-models`, or `--pick-efforts` on this planning dry-run (those force interactive preflight).
+**Never** pass `--pick-agents`, `--pick-models`, `--pick-efforts`, or `--pick-prompts` on this planning dry-run (those force interactive preflight).
 
 Parse the planned order — that is the **Simulated Solvable Set**. Empty set → stop; no recommendations.
 
@@ -91,9 +91,9 @@ Using PRD, issue bodies, and codebase as needed (fetch/read however repo practic
 
 ### 6. Optional extras
 
-Ask whether to add any non-profile flags the user cares about (e.g. `--prompt-file`, `--issue`). Only stamp flags they accept. Do not invent defaults for extras.
+Ask whether to add any non-profile flags the user cares about (e.g. `--prompt-file`, `--append-prompt-file`, `--pick-prompts`, `--issue`). Only stamp flags they accept. Do not invent defaults for extras.
 
-Note: one `--prompt-file` overrides built-ins for **every** issue regardless of per-issue agent.
+Note: `--prompt-file` still overrides built-ins for every issue that does not pick a file; `--append-prompt-file` appends instead. `--pick-prompts` is TTY-only.
 
 **Done when:** extras accepted or explicitly skipped.
 
@@ -118,10 +118,10 @@ Print in this order:
 3. **Copy-ready live command** — fenced full argv for starting the loop (**no** `--dry-run`), including:
    - scope flags: `--prd`, `--agent`, and `--repo` only when needed
    - whole-run: `--model` / `--reasoning-effort` when set (remember: these pre-fill / cascade only for rows that keep `--agent`)
-   - fine-grained: any of `--pick-agents`, `--pick-efforts`, `--pick-models` that the interview chose (`--pick-efforts` xor `--pick-models`; `--pick-agents` free to stack)
+   - fine-grained: any of `--pick-agents`, `--pick-efforts`, `--pick-models`, `--pick-prompts` that the interview chose (`--pick-efforts` xor `--pick-models`; `--pick-agents` and `--pick-prompts` free to stack)
    - accepted extras
 4. **Soft hint** — user may append `--dry-run` to preview plan/preflight without invoking agents. Pick flags still run interactive preflight under dry-run.
 
-Pick-mode table is the human crib sheet for the real TTY preflight; it is **not** encoded into argv (Nightshift has no profile-map file flag). Preflight column order is always agent → model → effort for enabled, row-capable columns; single proceed/abort confirm after all rows.
+Pick-mode table is the human crib sheet for the real TTY preflight; it is **not** encoded into argv (Nightshift has no profile-map file flag). Preflight column order is agent → model → effort → prompt → mode for enabled columns (model/effort still skip when the row agent cannot use them; prompt/mode appear only with `--pick-prompts`). Single proceed/abort confirm after all rows.
 
 **Done when:** summary + recs + live command + dry-run hint are all present. Skill ends (advice only — do not start the loop unless the user separately asks).

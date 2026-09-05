@@ -13,6 +13,7 @@ use crate::invocation_profile::{
     PreflightDimensions, RunEphemeralProfileMap, WholeRunInvocationDefaults,
 };
 use crate::orchestrator::WorkflowConfig;
+use crate::prompt::DirectivePolicy;
 
 /// CLI arguments for one PRD child-issue loop.
 #[derive(Parser)]
@@ -51,9 +52,15 @@ pub struct Args {
     /// TTY-only preflight that assigns a compatible coding agent per simulated-solvable issue. Blank rows keep --agent. May combine with either --pick-efforts or --pick-models. Unsupported columns are skipped for that row. Whole-run model and effort defaults apply only when the row agent equals --agent.
     #[arg(long)]
     pub pick_agents: bool,
-    /// Optional file containing maintainer directives to append to each prompt.
+    /// File that overrides built-in directives for every issue unless a --pick-prompts row supplies a file.
     #[arg(long)]
     pub prompt_file: Option<PathBuf>,
+    /// File appended to the resolved agent's built-in directives for every issue unless a --pick-prompts row supplies a file. Mutually exclusive with --prompt-file.
+    #[arg(long, conflicts_with = "prompt_file")]
+    pub append_prompt_file: Option<PathBuf>,
+    /// TTY-only preflight that assigns an optional prompt file and append/replace mode per planned issue. Blank path keeps the run-wide prompt policy. Enter on mode defaults to append. May combine with --pick-agents, --pick-efforts, and --pick-models.
+    #[arg(long)]
+    pub pick_prompts: bool,
     /// Base branch checked out and pulled before each agent run.
     #[arg(long, default_value = "main")]
     pub base_branch: String,
@@ -70,7 +77,7 @@ impl Args {
     pub fn to_workflow_config<'a>(
         &'a self,
         repo: &'a str,
-        directives: &'a str,
+        directive_policy: DirectivePolicy<'a>,
     ) -> WorkflowConfig<'a> {
         WorkflowConfig {
             prd: self.prd,
@@ -88,8 +95,9 @@ impl Args {
                 agents: self.pick_agents,
                 efforts: self.pick_efforts,
                 models: self.pick_models,
+                prompts: self.pick_prompts,
             },
-            directives,
+            directive_policy,
         }
     }
 }
@@ -99,6 +107,7 @@ mod tests {
     use super::Args;
     use crate::agent::Agent;
     use crate::invocation_profile::PreflightDimensions;
+    use crate::prompt::DirectivePolicy;
     use clap::{CommandFactory, Parser};
 
     #[test]
@@ -159,12 +168,11 @@ mod tests {
         .expect("agent picker flag should parse");
 
         assert_eq!(
-            args.to_workflow_config("owner/repo", "Run tests.")
+            args.to_workflow_config("owner/repo", DirectivePolicy::BuiltIn)
                 .preflight_dimensions,
             PreflightDimensions {
                 agents: true,
-                efforts: false,
-                models: false,
+                ..PreflightDimensions::default()
             }
         );
     }
@@ -182,12 +190,11 @@ mod tests {
         .expect("effort picker flag should parse");
 
         assert_eq!(
-            args.to_workflow_config("owner/repo", "Run tests.")
+            args.to_workflow_config("owner/repo", DirectivePolicy::BuiltIn)
                 .preflight_dimensions,
             PreflightDimensions {
-                agents: false,
                 efforts: true,
-                models: false,
+                ..PreflightDimensions::default()
             }
         );
     }
@@ -205,12 +212,11 @@ mod tests {
         .expect("full profile picker flag should parse");
 
         assert_eq!(
-            args.to_workflow_config("owner/repo", "Run tests.")
+            args.to_workflow_config("owner/repo", DirectivePolicy::BuiltIn)
                 .preflight_dimensions,
             PreflightDimensions {
-                agents: false,
-                efforts: false,
                 models: true,
+                ..PreflightDimensions::default()
             }
         );
     }
@@ -229,12 +235,12 @@ mod tests {
         .expect("agent and effort dimensions should stack");
 
         assert_eq!(
-            args.to_workflow_config("owner/repo", "Run tests.")
+            args.to_workflow_config("owner/repo", DirectivePolicy::BuiltIn)
                 .preflight_dimensions,
             PreflightDimensions {
                 agents: true,
                 efforts: true,
-                models: false,
+                ..PreflightDimensions::default()
             }
         );
     }
@@ -253,12 +259,12 @@ mod tests {
         .expect("agent and model dimensions should stack");
 
         assert_eq!(
-            args.to_workflow_config("owner/repo", "Run tests.")
+            args.to_workflow_config("owner/repo", DirectivePolicy::BuiltIn)
                 .preflight_dimensions,
             PreflightDimensions {
                 agents: true,
-                efforts: false,
                 models: true,
+                ..PreflightDimensions::default()
             }
         );
     }
@@ -276,5 +282,86 @@ mod tests {
         ]);
 
         assert!(parsed.is_err());
+    }
+
+    #[test]
+    fn append_prompt_file_conflicts_with_prompt_file() {
+        let parsed = Args::try_parse_from([
+            "nightshift",
+            "--prd",
+            "42",
+            "--agent",
+            "pi",
+            "--prompt-file",
+            "replace.md",
+            "--append-prompt-file",
+            "append.md",
+        ]);
+
+        assert!(parsed.is_err());
+    }
+
+    #[test]
+    fn pick_prompts_enables_prompt_preflight_dimension() {
+        let args = Args::try_parse_from([
+            "nightshift",
+            "--prd",
+            "42",
+            "--agent",
+            "pi",
+            "--pick-prompts",
+        ])
+        .expect("prompt picker flag should parse");
+
+        assert_eq!(
+            args.to_workflow_config("owner/repo", DirectivePolicy::BuiltIn)
+                .preflight_dimensions,
+            PreflightDimensions {
+                prompts: true,
+                ..PreflightDimensions::default()
+            }
+        );
+    }
+
+    #[test]
+    fn pick_prompts_combines_with_pick_agents() {
+        let args = Args::try_parse_from([
+            "nightshift",
+            "--prd",
+            "42",
+            "--agent",
+            "pi",
+            "--pick-prompts",
+            "--pick-agents",
+        ])
+        .expect("prompt and agent dimensions should stack");
+
+        assert_eq!(
+            args.to_workflow_config("owner/repo", DirectivePolicy::BuiltIn)
+                .preflight_dimensions,
+            PreflightDimensions {
+                agents: true,
+                prompts: true,
+                ..PreflightDimensions::default()
+            }
+        );
+    }
+
+    #[test]
+    fn help_explains_prompt_file_replace_append_and_pick_prompts() {
+        let mut command = Args::command();
+        let help = command.render_long_help().to_string();
+
+        assert!(help.contains(
+            "overrides built-in directives for every issue unless a --pick-prompts row supplies a file"
+        ));
+        assert!(help.contains("File appended to the resolved agent's built-in directives"));
+        assert!(help.contains("Mutually exclusive with --prompt-file"));
+        assert!(help.contains("Blank path keeps the run-wide prompt policy"));
+        assert!(help.contains("Enter on mode defaults to append"));
+        assert!(
+            !help.contains("maintainer directives to append to each prompt"),
+            "--prompt-file must not be described as append"
+        );
     }
 }

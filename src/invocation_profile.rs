@@ -7,6 +7,7 @@
 //! Inheritance without I/O or agent validation.
 
 use crate::agent::Agent;
+use crate::prompt::PerIssuePrompt;
 
 /// Whole-Run Invocation Defaults used when a child issue has no override.
 ///
@@ -36,6 +37,8 @@ pub struct PerIssueInvocationOverride {
     pub model: Option<String>,
     /// Agent-native reasoning effort selected for this child issue.
     pub reasoning_effort: Option<String>,
+    /// Per-issue prompt snapshot. `None` inherits the run-wide [`crate::prompt::DirectivePolicy`].
+    pub prompt: Option<PerIssuePrompt>,
 }
 
 /// In-memory overrides keyed by child issue number for one run only.
@@ -46,9 +49,9 @@ pub type RunEphemeralProfileMap = std::collections::HashMap<u32, PerIssueInvocat
 
 /// Optional Invocation Profile Preflight columns enabled for one run.
 ///
-/// `agents` may combine with either other dimension. Validation that `efforts`
-/// and `models` are mutually exclusive belongs at the CLI or orchestrator
-/// boundary; this pure configuration type only records requested columns.
+/// `agents` may combine with `--pick-efforts` or `--pick-models` (those two remain
+/// mutually exclusive at the CLI / orchestrator boundary) **and** with `prompts`.
+/// This type only records requested columns.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct PreflightDimensions {
     /// Collect a per-issue coding agent.
@@ -57,6 +60,15 @@ pub struct PreflightDimensions {
     pub efforts: bool,
     /// Collect a per-issue model and, where supported, reasoning effort.
     pub models: bool,
+    /// Collect a per-issue prompt file path and append/replace mode.
+    pub prompts: bool,
+}
+
+impl PreflightDimensions {
+    /// True when any preflight column is requested, including `--pick-prompts` alone.
+    pub fn requested(self) -> bool {
+        self.agents || self.efforts || self.models || self.prompts
+    }
 }
 
 /// Resolved agent, model, and reasoning-effort choices for one invocation.
@@ -130,6 +142,7 @@ mod tests {
             agent,
             model: model.map(str::to_owned),
             reasoning_effort: reasoning_effort.map(str::to_owned),
+            ..PerIssueInvocationOverride::default()
         }
     }
 
@@ -254,6 +267,7 @@ mod tests {
                 agents: false,
                 efforts: false,
                 models: false,
+                prompts: false,
             }
         );
     }

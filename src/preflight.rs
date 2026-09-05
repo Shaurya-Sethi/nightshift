@@ -13,6 +13,7 @@ use crate::invocation_profile::{
     PerIssueInvocationOverride, PreflightDimensions, RunEphemeralProfileMap,
     WholeRunInvocationDefaults,
 };
+use crate::prompt::{PerIssuePrompt, PromptMode};
 
 const BOLD: &str = "\x1b[1m";
 const DIM: &str = "\x1b[2m";
@@ -46,15 +47,15 @@ impl<'a> Io<'a> {
     /// # Errors
     ///
     /// Returns an actionable error directing unattended callers to whole-run
-    /// `--agent`, `--model`, and `--reasoning-effort` flags when either handle
-    /// is not a terminal.
+    /// `--agent`, `--model`, `--reasoning-effort`, `--prompt-file`, and
+    /// `--append-prompt-file` flags when either handle is not a terminal.
     pub fn ensure_terminal(&self) -> std::io::Result<()> {
         if self.is_terminal() {
             Ok(())
         } else {
             Err(std::io::Error::new(
                 std::io::ErrorKind::PermissionDenied,
-                "nightshift: --pick-agents, --pick-efforts, and --pick-models require an interactive TTY; use --agent, --model, and --reasoning-effort for unattended runs",
+                "nightshift: --pick-agents, --pick-efforts, --pick-models, and --pick-prompts require an interactive TTY; use --agent, --model, --reasoning-effort, --prompt-file, and --append-prompt-file for unattended runs",
             ))
         }
     }
@@ -131,6 +132,17 @@ fn write_model_hint(io: &mut Io<'_>) -> std::io::Result<()> {
     )
 }
 
+fn write_prompt_mode_legend(io: &mut Io<'_>) -> std::io::Result<()> {
+    writeln!(io.output, "{}", bold(io, "Prompt mode"))?;
+    writeln!(io.output, "{}", dim(io, "  1 append"))?;
+    writeln!(io.output, "{}", dim(io, "  2 replace"))?;
+    writeln!(
+        io.output,
+        "{}",
+        dim(io, "prompt = path; blank keeps run-wide")
+    )
+}
+
 fn write_issue_header(io: &mut Io<'_>, issue: &GithubIssue) -> std::io::Result<()> {
     writeln!(io.output)?;
     writeln!(
@@ -185,6 +197,20 @@ fn parse_effort_selection(selection: &str, efforts: &[&str]) -> std::io::Result<
     }
 }
 
+fn parse_prompt_mode(selection: &str) -> std::io::Result<PromptMode> {
+    if selection.is_empty() {
+        return Ok(PromptMode::Append);
+    }
+    match parse_legend_index(selection) {
+        Some(0) => Ok(PromptMode::Append),
+        Some(1) => Ok(PromptMode::Replace),
+        _ => Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "preflight selection is not in the prompt mode legend",
+        )),
+    }
+}
+
 fn confirm_proceed(io: &mut Io<'_>, dry_run: bool) -> std::io::Result<()> {
     writeln!(io.output)?;
     let prompt = if dry_run {
@@ -224,15 +250,19 @@ fn effort_skip_reason(agent: Agent) -> &'static str {
 
 /// Collects enabled Invocation Profile Preflight dimensions for every planned child issue.
 ///
-/// Fields are collected in agent, model, effort order. Each row resolves its
-/// agent before capability checks, so unsupported model or effort fields are
-/// skipped without blocking other rows. Blank fields remain absent for
-/// Same-Agent Defaults Inheritance during invocation resolution.
+/// Fields are collected in agent, model, effort, prompt, mode order for enabled
+/// columns. Each row resolves its agent before capability checks, so unsupported
+/// model or effort fields are skipped without blocking other rows. Prompt and
+/// mode are gated only on `dimensions.prompts`. Blank agent/model/effort fields
+/// remain absent for Same-Agent Defaults Inheritance. A blank prompt path
+/// inherits the run-wide directive policy; a supplied path is loaded after every
+/// row and before confirm.
 ///
 /// # Errors
 ///
 /// Returns an error when I/O fails, input is not a TTY, a selection is not in
-/// a displayed legend, or the user aborts preflight.
+/// a displayed legend, a picked prompt file cannot be read, or the user aborts
+/// preflight.
 pub fn pick_profiles(
     planned: &[GithubIssue],
     defaults: WholeRunInvocationDefaults<'_>,
@@ -247,8 +277,18 @@ pub fn pick_profiles(
     if dimensions.models {
         write_model_hint(io)?;
     }
+    if dimensions.prompts {
+        write_prompt_mode_legend(io)?;
+    }
+
+    struct PendingPrompt {
+        issue: u32,
+        path: String,
+        mode: PromptMode,
+    }
 
     let mut profiles = RunEphemeralProfileMap::new();
+    let mut pending: Vec<PendingPrompt> = Vec::new();
     let mut effort_legend_agent = None;
     for issue in planned {
         write_issue_header(io, issue)?;
@@ -306,16 +346,44 @@ pub fn pick_profiles(
             None
         };
 
+        if dimensions.prompts {
+            write_field_prompt(io, "prompt", "run-wide")?;
+            let path = read_line(io)?;
+            if path.is_empty() {
+                write_skip_reason(io, "mode", "inherit run-wide")?;
+            } else {
+                write_field_prompt(io, "mode", "append")?;
+                let mode = parse_prompt_mode(&read_line(io)?)?;
+                pending.push(PendingPrompt {
+                    issue: issue.number,
+                    path,
+                    mode,
+                });
+            }
+        }
+
         profiles.insert(
             issue.number,
             PerIssueInvocationOverride {
                 agent,
                 model,
                 reasoning_effort,
+                ..PerIssueInvocationOverride::default()
             },
         );
     }
 
+    for item in &pending {
+        let contents = crate::prompt::load_directives(std::path::Path::new(&item.path))
+            .map_err(std::io::Error::other)?;
+        profiles
+            .get_mut(&item.issue)
+            .expect("row inserted in the same pass")
+            .prompt = Some(PerIssuePrompt {
+            mode: item.mode,
+            contents,
+        });
+    }
     confirm_proceed(io, dry_run)?;
     Ok(profiles)
 }
@@ -326,7 +394,9 @@ mod tests {
     use crate::agent::Agent;
     use crate::github::GithubIssue;
     use crate::invocation_profile::{PreflightDimensions, WholeRunInvocationDefaults};
+    use crate::prompt::PromptMode;
     use std::io::Cursor;
+    use std::path::PathBuf;
 
     fn issue(number: u32) -> GithubIssue {
         GithubIssue {
@@ -355,6 +425,30 @@ mod tests {
             models: true,
             ..PreflightDimensions::default()
         }
+    }
+
+    fn prompts() -> PreflightDimensions {
+        PreflightDimensions {
+            prompts: true,
+            ..PreflightDimensions::default()
+        }
+    }
+
+    fn pi_defaults() -> WholeRunInvocationDefaults<'static> {
+        WholeRunInvocationDefaults {
+            agent: Agent::Pi,
+            model: None,
+            reasoning_effort: None,
+        }
+    }
+
+    fn write_temp_prompt(test_name: &str, contents: &str) -> PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "nightshift-preflight-prompt-{test_name}-{}",
+            std::process::id()
+        ));
+        std::fs::write(&path, contents).expect("write temp prompt file");
+        path
     }
 
     #[test]
@@ -403,7 +497,7 @@ mod tests {
             PreflightDimensions {
                 agents: true,
                 efforts: true,
-                models: false,
+                ..PreflightDimensions::default()
             },
             false,
             &mut io,
@@ -435,9 +529,8 @@ mod tests {
                 reasoning_effort: None,
             },
             PreflightDimensions {
-                agents: false,
                 efforts: true,
-                models: false,
+                ..PreflightDimensions::default()
             },
             false,
             &mut io,
@@ -464,8 +557,8 @@ mod tests {
             },
             PreflightDimensions {
                 agents: true,
-                efforts: false,
                 models: true,
+                ..PreflightDimensions::default()
             },
             false,
             &mut io,
@@ -497,8 +590,8 @@ mod tests {
             },
             PreflightDimensions {
                 agents: true,
-                efforts: false,
                 models: true,
+                ..PreflightDimensions::default()
             },
             false,
             &mut io,
@@ -767,5 +860,246 @@ mod tests {
             !output.contains("Issue #10 Child 10 effort"),
             "must not use the old single-line effort prompt"
         );
+    }
+
+    #[test]
+    fn pick_prompts_blank_path_stores_none_and_skips_mode() {
+        let planned = [issue(10)];
+        let mut input = Cursor::new(b"\n\n".as_slice());
+        let mut output = Vec::new();
+        let mut io = Io::new(true, &mut input, &mut output);
+
+        let profiles = pick_profiles(&planned, pi_defaults(), prompts(), false, &mut io)
+            .expect("blank path should inherit run-wide");
+
+        assert_eq!(profiles[&10].prompt, None);
+        let output = String::from_utf8(output).expect("preflight output is utf-8");
+        assert!(output.contains("mode skipped: inherit run-wide"));
+        assert!(output.contains("Start run with these profiles?"));
+        assert!(output.contains("Prompt mode"));
+        assert!(output.contains("prompt = path; blank keeps run-wide"));
+    }
+
+    #[test]
+    fn pick_prompts_path_enter_mode_is_append() {
+        let path = write_temp_prompt("enter-mode-append", "row extra\n");
+        let stdin = format!("{}\n\n\n", path.display());
+        let planned = [issue(10)];
+        let mut input = Cursor::new(stdin.into_bytes());
+        let mut output = Vec::new();
+        let mut io = Io::new(true, &mut input, &mut output);
+
+        let profiles = pick_profiles(&planned, pi_defaults(), prompts(), false, &mut io)
+            .expect("enter on mode should append");
+
+        let prompt = profiles[&10].prompt.as_ref().expect("path should snapshot");
+        assert_eq!(prompt.mode, PromptMode::Append);
+        assert_eq!(prompt.contents, "row extra");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn pick_prompts_path_2_is_replace() {
+        let path = write_temp_prompt("mode-2-replace", "replace only\n");
+        let stdin = format!("{}\n2\n\n", path.display());
+        let planned = [issue(10)];
+        let mut input = Cursor::new(stdin.into_bytes());
+        let mut output = Vec::new();
+        let mut io = Io::new(true, &mut input, &mut output);
+
+        let profiles = pick_profiles(&planned, pi_defaults(), prompts(), false, &mut io)
+            .expect("mode 2 should replace");
+
+        let prompt = profiles[&10].prompt.as_ref().expect("path should snapshot");
+        assert_eq!(prompt.mode, PromptMode::Replace);
+        assert_eq!(prompt.contents, "replace only");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn pick_prompts_path_1_is_append() {
+        let path = write_temp_prompt("mode-1-append", "appended extra\n");
+        let stdin = format!("{}\n1\n\n", path.display());
+        let planned = [issue(10)];
+        let mut input = Cursor::new(stdin.into_bytes());
+        let mut output = Vec::new();
+        let mut io = Io::new(true, &mut input, &mut output);
+
+        let profiles = pick_profiles(&planned, pi_defaults(), prompts(), false, &mut io)
+            .expect("mode 1 should append");
+
+        let prompt = profiles[&10].prompt.as_ref().expect("path should snapshot");
+        assert_eq!(prompt.mode, PromptMode::Append);
+        assert_eq!(prompt.contents, "appended extra");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn pick_prompts_rejects_invalid_mode_keys() {
+        for key in ["3", "append", "03"] {
+            let planned = [issue(10)];
+            let stdin = format!("/no/such/nightshift-prompt\n{key}\n");
+            let mut input = Cursor::new(stdin.into_bytes());
+            let mut output = Vec::new();
+            let mut io = Io::new(true, &mut input, &mut output);
+
+            let error = pick_profiles(&planned, pi_defaults(), prompts(), false, &mut io)
+                .expect_err("invalid mode key must fail");
+
+            assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+            assert!(
+                error
+                    .to_string()
+                    .contains("preflight selection is not in the prompt mode legend")
+            );
+        }
+    }
+
+    #[test]
+    fn pick_prompts_q_on_path_aborts_without_confirm() {
+        let planned = [issue(10)];
+        let mut input = Cursor::new(b"q\n".as_slice());
+        let mut output = Vec::new();
+        let mut io = Io::new(true, &mut input, &mut output);
+
+        let error = pick_profiles(&planned, pi_defaults(), prompts(), false, &mut io)
+            .expect_err("q on the path line must abort");
+
+        assert_eq!(error.kind(), std::io::ErrorKind::Interrupted);
+        let output = String::from_utf8(output).expect("preflight output is utf-8");
+        assert!(!output.contains("Start run with these profiles?"));
+    }
+
+    #[test]
+    fn pick_prompts_missing_file_fails_before_confirm() {
+        let planned = [issue(10)];
+        let mut input = Cursor::new(b"/no/such/nightshift-prompt-missing\n1\n".as_slice());
+        let mut output = Vec::new();
+        let mut io = Io::new(true, &mut input, &mut output);
+
+        let error = pick_profiles(&planned, pi_defaults(), prompts(), false, &mut io)
+            .expect_err("missing prompt file must fail the run");
+
+        assert!(
+            error
+                .to_string()
+                .contains("nightshift: failed to read prompt file:")
+        );
+        let output = String::from_utf8(output).expect("preflight output is utf-8");
+        assert!(!output.contains("Start run with these profiles?"));
+    }
+
+    #[test]
+    fn pick_prompts_two_missing_files_fail_in_plan_order() {
+        let planned = [issue(10), issue(11)];
+        let mut input = Cursor::new(
+            b"/no/such/nightshift-prompt-issue-10\n1\n/no/such/nightshift-prompt-issue-11\n1\n"
+                .as_slice(),
+        );
+        let mut output = Vec::new();
+        let mut io = Io::new(true, &mut input, &mut output);
+
+        let error = pick_profiles(&planned, pi_defaults(), prompts(), false, &mut io)
+            .expect_err("first unreadable pending path must fail");
+
+        let message = error.to_string();
+        assert!(message.contains("nightshift: failed to read prompt file:"));
+        assert!(message.contains("/no/such/nightshift-prompt-issue-10"));
+        assert!(!message.contains("/no/such/nightshift-prompt-issue-11"));
+        let output = String::from_utf8(output).expect("preflight output is utf-8");
+        assert!(!output.contains("Start run with these profiles?"));
+    }
+
+    #[test]
+    fn pick_prompts_stacks_after_agent_model_effort() {
+        let path = write_temp_prompt("stacked-row", "stacked extra\n");
+        let stdin = format!("2\nissue-model\n4\n{}\n1\n\n", path.display());
+        let planned = [issue(10)];
+        let mut input = Cursor::new(stdin.into_bytes());
+        let mut output = Vec::new();
+        let mut io = Io::new(true, &mut input, &mut output);
+
+        let profiles = pick_profiles(
+            &planned,
+            WholeRunInvocationDefaults {
+                agent: Agent::Pi,
+                model: Some("run-model"),
+                reasoning_effort: Some("medium"),
+            },
+            PreflightDimensions {
+                agents: true,
+                models: true,
+                prompts: true,
+                ..PreflightDimensions::default()
+            },
+            false,
+            &mut io,
+        )
+        .expect("stacked prompt column should follow agent model effort");
+
+        assert_eq!(profiles[&10].agent, Some(Agent::Codex));
+        assert_eq!(profiles[&10].model.as_deref(), Some("issue-model"));
+        assert_eq!(profiles[&10].reasoning_effort.as_deref(), Some("high"));
+        let prompt = profiles[&10].prompt.as_ref().expect("path should snapshot");
+        assert_eq!(prompt.mode, PromptMode::Append);
+        assert_eq!(prompt.contents, "stacked extra");
+        let output = String::from_utf8(output).expect("preflight output is utf-8");
+        assert!(output.contains("Agent choices"));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn pick_prompts_follows_cursor_model_skip_without_extra_effort_stdin() {
+        let path = write_temp_prompt("cursor-skip-then-prompt", "cursor extra\n");
+        let stdin = format!("cursor-thinking-high\n{}\n2\n\n", path.display());
+        let planned = [issue(10)];
+        let mut input = Cursor::new(stdin.into_bytes());
+        let mut output = Vec::new();
+        let mut io = Io::new(true, &mut input, &mut output);
+
+        let profiles = pick_profiles(
+            &planned,
+            WholeRunInvocationDefaults {
+                agent: Agent::Cursor,
+                model: None,
+                reasoning_effort: None,
+            },
+            PreflightDimensions {
+                models: true,
+                prompts: true,
+                ..PreflightDimensions::default()
+            },
+            false,
+            &mut io,
+        )
+        .expect("prompt should follow skipped effort with no extra stdin");
+
+        assert_eq!(profiles[&10].model.as_deref(), Some("cursor-thinking-high"));
+        assert_eq!(profiles[&10].reasoning_effort, None);
+        let prompt = profiles[&10].prompt.as_ref().expect("path should snapshot");
+        assert_eq!(prompt.mode, PromptMode::Replace);
+        assert_eq!(prompt.contents, "cursor extra");
+        let output = String::from_utf8(output).expect("preflight output is utf-8");
+        assert!(output.contains("effort skipped: model-encoded effort"));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn pick_prompts_alone_omits_agent_and_effort_ui() {
+        let planned = [issue(10)];
+        let mut input = Cursor::new(b"\n\n".as_slice());
+        let mut output = Vec::new();
+        let mut io = Io::new(true, &mut input, &mut output);
+
+        pick_profiles(&planned, pi_defaults(), prompts(), false, &mut io)
+            .expect("prompts-only preflight should confirm after path");
+
+        let output = String::from_utf8(output).expect("preflight output is utf-8");
+        assert!(output.contains("Prompt mode"));
+        assert!(output.contains("#10  Child 10"));
+        assert!(output.contains("Start run with these profiles?"));
+        assert!(!output.contains("Agent choices"));
+        assert!(!output.contains("Effort choices"));
+        assert!(!output.contains("agent skipped"));
     }
 }

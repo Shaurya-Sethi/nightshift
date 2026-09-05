@@ -44,11 +44,11 @@ The full body of the selected child issue is injected inside a fenced ````markdo
 
 ### 4. Instructions (`<DIRECTIVES>`)
 
-The final section contains the step-by-step instructions the agent must follow. By design, `nightshift` supports two modes for instructions:
+The final section contains the step-by-step instructions the agent must follow. By design, `nightshift` supports these modes for instructions:
 
 #### A. Default Directives
 
-If `--prompt-file` is omitted, built-in directives follow the **resolved** invocation agent for that issue (the whole-run `--agent`, or a `--pick-agents` row). Non-Pi agents receive these default instructions guiding them through the automated feature branch, test-driven development, PR, and merge loop:
+If `--prompt-file` and `--append-prompt-file` are omitted, built-in directives follow the **resolved** invocation agent for that issue (the whole-run `--agent`, or a `--pick-agents` row). Non-Pi agents receive these default instructions guiding them through the automated feature branch, test-driven development, PR, and merge loop:
 
 ```text
 1. Orient yourself in the repository.
@@ -69,7 +69,23 @@ A Pi row omits step 6 (`Self-review using sub-agents.`). Pi has no sub-agent sup
 You can provide a custom instructions file via `--prompt-file <path>`.
 
 > [!IMPORTANT]
-> A custom prompt file **completely overrides** the default directives for **every** issue in the run, regardless of per-issue agent. If you provide a custom prompt file, you are responsible for instructing the agent on how to branch, test, open a PR, and close the issue, or whichever workflow you prefer the agent to execute.
+> A custom prompt file **completely overrides** the default directives for **every issue that does not pick a file**, regardless of per-issue agent. If you provide a custom prompt file, you are responsible for instructing the agent on how to branch, test, open a PR, and close the issue, or whichever workflow you prefer the agent to execute.
+
+#### C. Appended Directives (`--append-prompt-file`)
+
+`--append-prompt-file <path>` keeps the resolved agent's built-in directives, then adds a blank line and the file contents. This is mutually exclusive with `--prompt-file` at the CLI. Append uses Pi built-ins (no sub-agent step) when the resolved agent is Pi. Like B, this applies for every issue that does not pick a file.
+
+#### Per-issue override (`--pick-prompts`)
+
+TTY-only. For each planned child, type an optional path and choose append or replace. Enter on the path inherits the run-wide policy (A, B, or C). A supplied path fully overrides that policy: path + append uses that issue's resolved-agent built-ins plus a blank line plus the file; path + replace uses the file only. Files are read once at preflight (snapshot); mid-run edits are ignored.
+
+| Run-wide | Per-item row | Directives for that issue |
+| --- | --- | --- |
+| none | blank | agent built-ins |
+| `--prompt-file F` | blank | contents of F |
+| `--append-prompt-file F` | blank | agent built-ins + blank line + contents of F |
+| any | path + append | agent built-ins + blank line + that file (run-wide ignored) |
+| any | path + replace | that file only (run-wide ignored) |
 
 ---
 

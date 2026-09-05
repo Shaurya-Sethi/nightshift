@@ -314,6 +314,9 @@ pub trait AgentRunner {
 }
 
 /// [`AgentRunner`] that spawns the configured agent command.
+///
+/// The prompt is written to the child stdin. Child stdout and stderr are
+/// discarded; nightshift reports exit status, not agent log text.
 pub struct ProcessAgentRunner;
 
 impl AgentRunner for ProcessAgentRunner {

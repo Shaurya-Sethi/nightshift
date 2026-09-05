@@ -1,7 +1,8 @@
-//! Monochrome terminal output for the nightshift CLI.
+//! Cooked (non-`--tui`) monochrome terminal output for the nightshift CLI.
 //!
 //! Uses bold and dim ANSI attributes only so output stays readable in any
-//! terminal theme. Section headers use horizontal rules only.
+//! terminal theme. Section headers use horizontal rules only. The Watch Board
+//! lives in [`crate::tui`].
 
 use std::io::{IsTerminal, Write};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};

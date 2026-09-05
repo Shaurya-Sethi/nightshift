@@ -1,10 +1,9 @@
-//! Watch Board renderer, live session, and offline preview state.
+//! Watch Board renderer, live `--tui` session, and offline preview state.
 //!
-//! The renderer is shared by `cargo run --example watch_board` and opt-in
-//! `--tui`. Live wiring keeps orchestration on the calling thread and runs the
-//! dashboard on a scoped UI thread behind a narrow event/cancel seam.
-//!
-//! Preview the same renderer with labeled sample state:
+//! `--tui` is opt-in and needs stdin and stdout TTYs. While work is active,
+//! `q` / Ctrl-C request stop after the current issue without killing the
+//! agent. Idle `q` / Ctrl-C / Enter dismisses. Preview the same renderer
+//! offline:
 //!
 //! ```text
 //! cargo run --example watch_board

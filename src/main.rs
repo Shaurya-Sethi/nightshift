@@ -41,7 +41,7 @@ fn main() {
         std::process::exit(1);
     }
 
-    let directives = match load_directives(args.prompt_file.as_deref()) {
+    let directives = match load_directives(args.prompt_file.as_deref(), args.agent) {
         Ok(directives) => directives,
         Err(e) => {
             eprintln!("{}", e);

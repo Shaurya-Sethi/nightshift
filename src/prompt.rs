@@ -9,13 +9,15 @@ use std::fs::File;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+use crate::agent::Agent;
 use crate::github::GithubIssue;
 
-/// Returns the built-in maintainer directives appended to every prompt.
+/// Returns the built-in maintainer directives for agents that support the full workflow.
 ///
 /// These defaults describe the expected agent workflow: branch from the base,
 /// implement with tests, open a PR, self-review, merge, close the issue, and
-/// return to the base branch.
+/// return to the base branch. Use [`default_directives_for`] when the selected
+/// agent cannot follow every step.
 pub fn default_directives() -> &'static str {
     r#"1. Orient yourself in the repository.
 2. Create a feature branch: git checkout -b issue-{issue_number}
@@ -28,15 +30,27 @@ pub fn default_directives() -> &'static str {
 9. Checkout the base branch and pull."#
 }
 
-/// Loads maintainer directives from a file or falls back to [`default_directives`].
+/// Returns built-in directives appropriate for the selected coding agent.
+///
+/// Pi has no sub-agent support, so its list omits that step. All other agents
+/// use [`default_directives`].
+pub fn default_directives_for(agent: Agent) -> String {
+    match agent {
+        Agent::Pi => default_directives().replace("6. Self-review using sub-agents.\n", ""),
+        _ => default_directives().to_string(),
+    }
+}
+
+/// Loads maintainer directives from a file or falls back to [`default_directives_for`].
 ///
 /// File contents are trimmed before being appended to the rendered issue prompt.
+/// A supplied file always overrides agent-specific built-in directives.
 ///
 /// # Errors
 ///
 /// Returns a user-facing error string when a requested prompt file cannot be
 /// read.
-pub fn load_directives(prompt_file: Option<&Path>) -> Result<String, String> {
+pub fn load_directives(prompt_file: Option<&Path>, agent: Agent) -> Result<String, String> {
     match prompt_file {
         Some(prompt_file) => std::fs::read_to_string(prompt_file)
             .map(|prompt| prompt.trim().to_string())
@@ -46,7 +60,7 @@ pub fn load_directives(prompt_file: Option<&Path>) -> Result<String, String> {
                     prompt_file.display()
                 )
             }),
-        None => Ok(default_directives().to_string()),
+        None => Ok(default_directives_for(agent)),
     }
 }
 
@@ -114,6 +128,7 @@ pub fn save_prompt_copy(issue_number: u32, prompt: &str) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::Agent;
     use crate::github::GithubIssue;
 
     #[test]
@@ -135,5 +150,27 @@ mod tests {
         assert!(prompt.contains("Acceptance: returns 200"));
         assert!(prompt.contains("1. Write tests"));
         assert!(prompt.contains("foobar/repo"));
+    }
+
+    #[test]
+    fn pi_default_directives_omit_sub_agent_step() {
+        let directives = default_directives_for(Agent::Pi);
+        assert!(!directives.contains("sub-agents"));
+        assert!(directives.contains("git checkout -b issue-{issue_number}"));
+        assert!(directives.contains("gh pr create"));
+        assert!(directives.contains("gh pr merge"));
+        assert!(directives.contains("gh issue close"));
+    }
+
+    #[test]
+    fn non_pi_agents_keep_shared_default_directives() {
+        for agent in [
+            Agent::Claude,
+            Agent::Codex,
+            Agent::Antigravity,
+            Agent::Cursor,
+        ] {
+            assert_eq!(default_directives_for(agent), default_directives());
+        }
     }
 }

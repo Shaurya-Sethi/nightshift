@@ -62,6 +62,8 @@ If `--prompt-file` is omitted, the agent receives these default instructions gui
 9. Checkout the base branch and pull.
 ```
 
+`--agent pi` omits step 6 (`Self-review using sub-agents.`). Pi has no sub-agent support, so that instruction is dropped rather than left in as dead weight. Remaining steps keep their original numbers. All other agents receive the full list above.
+
 #### B. Custom Directives (`--prompt-file`)
 
 You can provide a custom instructions file via `--prompt-file <path>`.

@@ -48,7 +48,7 @@ The final section contains the step-by-step instructions the agent must follow. 
 
 #### A. Default Directives
 
-If `--prompt-file` is omitted, the agent receives these default instructions guiding them through the automated feature branch, test-driven development, PR, and merge loop:
+If `--prompt-file` is omitted, built-in directives follow the **resolved** invocation agent for that issue (the whole-run `--agent`, or a `--pick-agents` row). Non-Pi agents receive these default instructions guiding them through the automated feature branch, test-driven development, PR, and merge loop:
 
 ```text
 1. Orient yourself in the repository.
@@ -62,14 +62,14 @@ If `--prompt-file` is omitted, the agent receives these default instructions gui
 9. Checkout the base branch and pull.
 ```
 
-`--agent pi` omits step 6 (`Self-review using sub-agents.`). Pi has no sub-agent support, so that instruction is dropped rather than left in as dead weight. Remaining steps keep their original numbers. All other agents receive the full list above.
+A Pi row omits step 6 (`Self-review using sub-agents.`). Pi has no sub-agent support, so that instruction is dropped rather than left in as dead weight. Remaining steps keep their original numbers. All other agents receive the full list above.
 
 #### B. Custom Directives (`--prompt-file`)
 
 You can provide a custom instructions file via `--prompt-file <path>`.
 
 > [!IMPORTANT]
-> A custom prompt file **completely overrides** the default directives rather than appending to them. If you provide a custom prompt file, you are responsible for instructing the agent on how to branch, test, open a PR, and close the issue, or whichever workflow you prefer the agent to execute.
+> A custom prompt file **completely overrides** the default directives for **every** issue in the run, regardless of per-issue agent. Agent-Scoped Directives apply only when no prompt file is set. If you provide a custom prompt file, you are responsible for instructing the agent on how to branch, test, open a PR, and close the issue, or whichever workflow you prefer the agent to execute.
 
 ---
 

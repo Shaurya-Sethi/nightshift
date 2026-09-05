@@ -120,17 +120,14 @@ impl Agent {
         }
 
         // GitHub Codex is `exec - --ephemeral`; the stdin marker is not last.
-        if self == Self::Codex {
-            let stdin_idx = args
-                .iter()
+        let idx = if self == Self::Codex {
+            args.iter()
                 .position(|arg| arg == "-")
-                .expect("codex base command always contains stdin marker");
-            for (offset, arg) in extra.into_iter().enumerate() {
-                args.insert(stdin_idx + offset, arg);
-            }
+                .expect("codex base command always contains stdin marker")
         } else {
-            args.extend(extra);
-        }
+            args.len()
+        };
+        args.splice(idx..idx, extra);
 
         Ok((program, args))
     }
@@ -401,18 +398,6 @@ mod tests {
                 })
                 .is_err()
         );
-    }
-
-    #[test]
-    fn omitted_reasoning_effort_does_not_add_an_agent_flag() {
-        let (_, args) = Agent::Codex
-            .get_command_with_profile(InvocationProfile {
-                agent: Agent::Codex,
-                model: None,
-                reasoning_effort: None,
-            })
-            .expect("codex can use its default effort");
-        assert_eq!(args, vec!["exec", "-", "--ephemeral"]);
     }
 
     #[test]

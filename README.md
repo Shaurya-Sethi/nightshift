@@ -27,7 +27,7 @@ This places the `nightshift` binary in `~/.cargo/bin`, which is on your `$PATH` 
 ## Usage
 
 ```bash
-nightshift --prd 12 --agent claude --model claude-sonnet-4-6
+nightshift --prd 12 --agent claude --model claude-opus-5
 ```
 
 
@@ -120,26 +120,11 @@ The intended flow is `to-nightshift-prd` → `to-nightshift-issues` → `recomme
 Copy the skill folders into wherever your agent discovers skills, in the repository you want issues for:
 
 ```bash
-cp -r /path/to/nightshift/skills/* .claude/skills/   # Claude Code (project)
-cp -r /path/to/nightshift/skills/* .agents/skills/   # Codex and other agents
-cp -r /path/to/nightshift/skills/* ~/.claude/skills/ # Claude Code (all projects)
+cp -r /path/to/nightshift/skills/* /path/to/your/project/.agents/skills/   # project
+cp -r /path/to/nightshift/skills/* ~/.agents/skills/ # global
 ```
 
-Then invoke them by name in your agent, e.g. `/to-nightshift-prd` in Claude Code.
-
-### Running the skills non-interactively
-
-The skills also work without a chat session. With [Pi](https://pi.dev/) for example, load the skill explicitly and tell the agent to proceed without asking questions:
-
-```bash
-pi -p --no-session --skill /path/to/nightshift/skills/to-nightshift-prd \
-  --append-system-prompt "Non-interactive run: treat every 'check with the user' step as approved." \
-  "Use the to-nightshift-prd skill. Feature: <describe the feature>. Publish the PRD."
-
-pi -p --no-session --skill /path/to/nightshift/skills/to-nightshift-issues \
-  --append-system-prompt "Non-interactive run: treat the breakdown as approved and publish." \
-  "Use the to-nightshift-issues skill to break down PRD #<n>."
-```
+Then invoke them by name in your agent.
 
 ## Keeping Your System Awake
 
@@ -154,4 +139,3 @@ For long-running PRD loops, see [docs/keep-alive.md](docs/keep-alive.md).
 - **File an Issue:** If you find a bug, encounter unexpected behavior, or have an idea for a new feature - [Open an issue](https://github.com/Shaurya-Sethi/nightshift/issues) to start a discussion.
 - **Add a New Agent:** Want to use `nightshift` with another coding assistant? Follow the step-by-step agent integration guide in [CONTRIBUTING.md](CONTRIBUTING.md#tier-1-adding-a-new-agent).
 - **Propose Other Changes:** For parser, orchestrator, or CLI changes, please open an issue first so we can align on the design. Check out [CONTRIBUTING.md](CONTRIBUTING.md#tier-2-everything-else) for codebase style and testing guidelines.
-

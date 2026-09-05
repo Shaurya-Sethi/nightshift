@@ -10,7 +10,7 @@ use std::io::Write;
 use std::process::{Command, ExitStatus, Stdio};
 
 /// Coding-agent CLI variants supported by nightshift.
-#[derive(ValueEnum, Debug, Clone, Copy)]
+#[derive(ValueEnum, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Agent {
     /// Anthropic Claude Code, invoked as `claude`.
     Claude,

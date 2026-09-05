@@ -1021,7 +1021,7 @@ mod tests {
         assert_eq!(*agent.agents.borrow(), vec![Agent::Pi, Agent::Claude]);
         let prompts = agent.prompts.borrow();
         assert!(!prompts[0].contains("sub-agents"));
-        assert!(!prompts[0].contains("pi -p --no-session"));
+        assert!(prompts[0].contains("pi -p --no-session"));
         assert!(prompts[1].contains("sub-agents"));
         assert!(
             String::from_utf8(output)

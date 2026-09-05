@@ -62,7 +62,17 @@ If `--prompt-file` and `--append-prompt-file` are omitted, built-in directives f
 9. Checkout the base branch and pull.
 ```
 
-A Pi row omits step 6 (`Self-review using sub-agents.`). Pi has no sub-agent support, so that instruction is dropped rather than left in as dead weight. Remaining steps keep their original numbers. All other agents receive the full list above.
+For a Pi row, directive 6 is replaced because Pi has no native subagents. Pi launches a separate non-interactive, no-session Pi process for a read-only review, then resolves valid findings before continuing:
+
+```text
+6. Run an independent read-only Pi review from the repository root, then address its findings:
+
+   pi -p --no-session --tools read,bash "Review the current issue implementation and tests. Inspect the working tree and diff against the target base branch. Do not edit files, run formatters, commit, push, change GitHub issues, create a PR, or invoke Pi. Report only actionable findings, ordered by severity, with file:line and concise rationale. If none, say 'No findings.'"
+
+   Review output is input to your self-review. Fix valid findings, then continue.
+```
+
+The reviewer uses Pi's persisted model selection. An explicitly supplied nightshift `--model` applies only to the primary Pi process.
 
 #### B. Custom Directives (`--prompt-file`)
 
@@ -73,7 +83,7 @@ You can provide a custom instructions file via `--prompt-file <path>`.
 
 #### C. Appended Directives (`--append-prompt-file`)
 
-`--append-prompt-file <path>` keeps the resolved agent's built-in directives, then adds a blank line and the file contents. This is mutually exclusive with `--prompt-file` at the CLI. Append uses Pi built-ins (no sub-agent step) when the resolved agent is Pi. Like B, this applies for every issue that does not pick a file.
+`--append-prompt-file <path>` keeps the resolved agent's built-in directives, then adds a blank line and the file contents. This is mutually exclusive with `--prompt-file` at the CLI. Append uses Pi built-ins (independent read-only Pi review in place of the sub-agent step) when the resolved agent is Pi. Like B, this applies for every issue that does not pick a file.
 
 #### Per-issue override (`--pick-prompts`)
 

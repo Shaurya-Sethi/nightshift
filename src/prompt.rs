@@ -55,12 +55,11 @@ impl PerIssuePrompt {
     }
 }
 
-/// Returns the built-in maintainer directives for agents that support the full workflow.
+/// Returns the built-in maintainer directives appended to every prompt.
 ///
 /// These defaults describe the expected agent workflow: branch from the base,
 /// implement with tests, open a PR, self-review, merge, close the issue, and
-/// return to the base branch. Use [`default_directives_for`] when the selected
-/// agent cannot follow every step.
+/// return to the base branch.
 pub fn default_directives() -> &'static str {
     r#"1. Orient yourself in the repository.
 2. Create a feature branch: git checkout -b issue-{issue_number}
@@ -75,11 +74,19 @@ pub fn default_directives() -> &'static str {
 
 /// Returns built-in directives appropriate for the selected coding agent.
 ///
-/// Pi has no sub-agent support, so its list omits that step. All other agents
-/// use [`default_directives`].
+/// Pi has no native subagent support, so its review step launches an
+/// independent, read-only Pi process instead. All other agents use the shared
+/// default directives.
 pub fn default_directives_for(agent: Agent) -> String {
     match agent {
-        Agent::Pi => default_directives().replace("6. Self-review using sub-agents.\n", ""),
+        Agent::Pi => default_directives().replace(
+            "6. Self-review using sub-agents.",
+            r#"6. Run an independent read-only Pi review from the repository root, then address its findings:
+
+   pi -p --no-session --tools read,bash "Review the current issue implementation and tests. Inspect the working tree and diff against the target base branch. Do not edit files, run formatters, commit, push, change GitHub issues, create a PR, or invoke Pi. Report only actionable findings, ordered by severity, with file:line and concise rationale. If none, say 'No findings.'"
+
+   Review output is input to your self-review. Fix valid findings, then continue."#,
+        ),
         _ => default_directives().to_string(),
     }
 }
@@ -215,12 +222,18 @@ mod tests {
     }
 
     #[test]
-    fn pi_default_directives_omit_sub_agent_step() {
+    fn pi_default_directives_run_an_independent_read_only_pi_reviewer() {
         let directives = default_directives_for(Agent::Pi);
-        assert!(!directives.contains("sub-agents"));
+
+        assert!(directives.contains("pi -p --no-session --tools read,bash"));
+        assert!(!directives.contains("read,bash,grep,find,ls"));
+        assert!(directives.contains("Do not edit files"));
+        assert!(directives.contains("If none, say 'No findings.'"));
+        assert!(!directives.contains("using sub-agents"));
+        assert!(directives.contains("6. Run an independent read-only Pi review"));
+        assert!(directives.contains("7. Squash merge using 'gh pr merge'"));
         assert!(directives.contains("git checkout -b issue-{issue_number}"));
         assert!(directives.contains("gh pr create"));
-        assert!(directives.contains("gh pr merge"));
         assert!(directives.contains("gh issue close"));
     }
 
@@ -238,7 +251,7 @@ mod tests {
     #[test]
     fn built_in_directives_follow_the_resolved_agent() {
         let directives = directives_for_invocation(DirectivePolicy::BuiltIn, None, Agent::Pi);
-        assert!(!directives.contains("sub-agents"));
+        assert!(directives.contains("pi -p --no-session --tools read,bash"));
         assert_eq!(
             directives_for_invocation(
                 DirectivePolicy::Replace("Custom directives."),
@@ -257,7 +270,7 @@ mod tests {
             directives.as_ref(),
             format!("{}\n\nextra", default_directives_for(Agent::Pi))
         );
-        assert!(!directives.contains("sub-agents"));
+        assert!(directives.contains("pi -p --no-session --tools read,bash"));
     }
 
     #[test]

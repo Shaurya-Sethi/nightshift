@@ -23,8 +23,6 @@ pub enum Agent {
     /// Cursor agent CLI, invoked as `agent`.
     Cursor,
     /// Pi Coding Agent, invoked as `pi`.
-    ///
-    /// Pi has no sub-agent support; built-in directives omit that step.
     Pi,
     /// OpenCode CLI, invoked as `opencode run --auto`.
     #[value(name = "opencode")]

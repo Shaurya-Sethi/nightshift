@@ -132,6 +132,25 @@ Then invoke them by name in your agent.
 
 For long-running PRD loops, see [docs/keep-alive.md](docs/keep-alive.md).
 
+## Watch Board preview
+
+The Watch Board is a full-screen renderer for later opt-in `--tui` orchestration ([#15](https://github.com/Shaurya-Sethi/nightshift/issues/15)). This slice ships the board and an **offline preview** only. It does not fetch GitHub, spawn agents, or add `--tui`.
+
+```bash
+cargo run --example watch_board
+```
+
+The example uses the same renderer as the library, with labeled sample rows for running, completed, blocked, queued, and failed. `NO_COLOR` is honored. Status is always written as text, not color alone.
+
+| Key | Action |
+| --- | --- |
+| `j` / `↓` | next issue |
+| `k` / `↑` | previous issue |
+| `g` / `Home` | first issue |
+| `G` / `End` | last issue |
+| `?` | help |
+| `q` / `Ctrl-C` | leave and restore the terminal |
+
 ## Contributing
 
 `nightshift` is under active development, and i'd love your help! Whether you are fixing a bug, adding support for a new coding agent, or proposing new features, all contributions are extremely welcome.

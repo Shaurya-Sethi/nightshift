@@ -25,7 +25,7 @@ Ask, in order:
    - **Effort dimension** (`--pick-efforts`) **or** **model dimension** (`--pick-models`) — mutually exclusive; either may stack with `--pick-agents`.
 4. **Models under consideration** — user names the allowlist and/or whole-run pin. Do **not** scrape agent model catalogs. When `--pick-agents` is on and agents will differ, collect model notes **per candidate agent** the user might choose (still user-supplied, not catalog scrape).
 
-**Capability hard-stop** before any dry-run: check chosen whole-run agent and enabled dimensions against this repo's README agent matrix. Refuse illegal whole-run combos. Point at the matrix; do not invent argv. When issue #5 lands OpenCode and Copilot, reread the README matrix rather than assuming argv.
+**Capability hard-stop** before any dry-run: check chosen whole-run agent and enabled dimensions against this repo's README agent matrix. Refuse illegal whole-run combos. Point at the matrix; do not invent argv.
 
 Rules of thumb:
 

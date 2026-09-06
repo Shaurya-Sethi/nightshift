@@ -1,10 +1,9 @@
-//! Watch Board renderer, live session, and offline preview state.
+//! Watch Board renderer, live `--tui` session, and offline preview state.
 //!
-//! The renderer is shared by `cargo run --example watch_board` and opt-in
-//! `--tui`. Live wiring keeps orchestration on the calling thread and runs the
-//! dashboard on a scoped UI thread behind a narrow event/cancel seam.
-//!
-//! Preview the same renderer with labeled sample state:
+//! `--tui` is opt-in and needs stdin and stdout TTYs. While work is active,
+//! `q` / Ctrl-C request stop after the current issue without killing the
+//! agent. Idle `q` / Ctrl-C / Enter dismisses. Preview the same renderer
+//! offline:
 //!
 //! ```text
 //! cargo run --example watch_board
@@ -1271,12 +1270,20 @@ fn render_help(frame: &mut Frame, state: &BoardState, theme: Theme, area: Rect) 
     let help_area = centered(area, width, height);
     frame.render_widget(Clear, help_area);
     let quit_line = if state.live {
-        "q / Ctrl-C stop after current issue"
+        if state.can_dismiss() {
+            "q / Ctrl-C / Enter dismiss"
+        } else {
+            "q / Ctrl-C stop after current issue"
+        }
     } else {
         "q / Ctrl-C leave preview"
     };
     let extra = if state.live {
-        "Enter / q  dismiss when idle. Never kills an agent."
+        if state.can_dismiss() {
+            "Never kills an agent."
+        } else {
+            "Enter / q  dismiss when idle. Never kills an agent."
+        }
     } else {
         "Offline sample. No GitHub. No agent."
     };
@@ -1509,6 +1516,28 @@ mod tests {
         assert!(text.contains("next issue"), "{text}");
         assert!(text.contains("leave preview"), "{text}");
         assert!(text.contains("No GitHub"), "{text}");
+    }
+
+    #[test]
+    fn live_help_matches_active_versus_terminal_keys() {
+        let mut state = BoardState::live_run(42, "owner/repo".into(), "main".into());
+        state.phase = Phase::Running { issue: 10 };
+        state.help_open = true;
+        let active = plain(&draw(&state, &Theme::native(), 80, 24));
+        assert!(active.contains("stop after current"), "{active}");
+
+        state.phase = Phase::Done;
+        let done = plain(&draw(&state, &Theme::native(), 80, 24));
+        assert!(done.contains("dismiss"), "{done}");
+        assert!(!done.contains("stop after current"), "{done}");
+
+        state.phase = Phase::Failed {
+            issue: 10,
+            message: "boom".to_string(),
+        };
+        let failed = plain(&draw(&state, &Theme::native(), 80, 24));
+        assert!(failed.contains("dismiss"), "{failed}");
+        assert!(!failed.contains("stop after current"), "{failed}");
     }
 
     #[test]

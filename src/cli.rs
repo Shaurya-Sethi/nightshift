@@ -3,7 +3,7 @@
 //! The parsed arguments are translated into [`crate::orchestrator::WorkflowConfig`]
 //! by the binary entrypoint. They identify the PRD, optional issue floor,
 //! repository, Whole-Run Invocation Defaults, optional Preflight Dimensions,
-//! directive source, base branch, and dry-run mode.
+//! directive source, base branch, dry-run mode, and opt-in `--tui` Watch Board.
 
 use clap::Parser;
 use std::path::PathBuf;
@@ -67,7 +67,7 @@ pub struct Args {
     /// Simulate planned order and preview the first prompt and command without invoking an agent; requested preflight still runs.
     #[arg(long)]
     pub dry_run: bool,
-    /// Opt-in Watch Board. Requires stdin and stdout TTY and fails before GitHub or git work, including repo resolution. While work is active, q and Ctrl-C stop after the current issue without killing the agent. When idle, q or Enter dismisses the board. Without this flag, cooked and non-TTY output stay unchanged.
+    /// Opt-in Watch Board. Requires stdin and stdout TTY and fails before GitHub or git work, including repo resolution. While work is active, q and Ctrl-C stop after the current issue without killing the agent. When idle, q, Ctrl-C, or Enter dismisses the board. Without this flag, cooked and non-TTY output stay unchanged.
     #[arg(long)]
     pub tui: bool,
 }

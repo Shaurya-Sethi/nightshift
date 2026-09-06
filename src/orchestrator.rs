@@ -2,8 +2,8 @@
 //!
 //! Fetches ready GitHub issues, asks [`crate::parser`] which child to run, and
 //! invokes the configured agent with a rendered prompt. Also owns dry-run
-//! behavior, git hygiene, Invocation Profile Preflight, and the post-agent
-//! check that the selected issue was closed.
+//! behavior, git hygiene, Invocation Profile Preflight, cooked vs `--tui`
+//! output, and the post-agent check that the selected issue was closed.
 
 use crate::agent::AgentRunner;
 use crate::console;
@@ -378,13 +378,16 @@ fn roster_issue(issue: &GithubIssue, config: &WorkflowConfig<'_>) -> RosterIssue
 /// filters direct children of the requested PRD, then selects the
 /// lowest-numbered unblocked child. Dry runs print the full simulated solve order,
 /// the agent command preview, and the first planned issue's prompt, then exit.
+/// With `--tui`, that preview prints only after the Watch Board is dismissed.
 /// Non-dry runs save a prompt copy, invoke the agent,
 /// and require the selected GitHub issue to be closed before continuing.
 ///
-/// When pick flags are set, Invocation Profile Preflight runs after the session
-/// header and before dry-run or the live loop. Git hygiene stays inside those
-/// later phases. `--tui` starts the Watch Board only after cooked preflight
-/// releases stdin/stdout locks.
+/// When pick flags are set, Invocation Profile Preflight runs before dry-run
+/// or the live loop. Cooked mode prints a session header first; `--tui` skips
+/// that header. Git hygiene stays inside those later phases. `--tui` starts the
+/// Watch Board only after cooked preflight releases stdin/stdout. While the
+/// board is active, `q` / Ctrl-C request stop after the current issue without
+/// killing the agent.
 ///
 /// # Errors
 ///

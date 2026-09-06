@@ -1,10 +1,11 @@
 //! Pure Invocation Profile data and cascade resolution.
 //!
-//! A [`WholeRunInvocationDefaults`] value supplies a required agent and optional
-//! run-wide model and reasoning-effort choices. A [`PerIssueInvocationOverride`]
-//! can replace any field for one child issue in a
-//! [`RunEphemeralProfileMap`]. [`resolve`] applies Same-Agent Defaults
-//! Inheritance without I/O or agent validation.
+//! A [`crate::invocation_profile::WholeRunInvocationDefaults`] value supplies a
+//! required agent and optional run-wide model and reasoning-effort choices. A
+//! [`crate::invocation_profile::PerIssueInvocationOverride`] can replace any field
+//! for one child issue in a [`crate::invocation_profile::RunEphemeralProfileMap`].
+//! [`crate::invocation_profile::resolve`] applies Same-Agent Defaults Inheritance
+//! without I/O or agent validation.
 
 use crate::agent::Agent;
 use crate::prompt::PerIssuePrompt;

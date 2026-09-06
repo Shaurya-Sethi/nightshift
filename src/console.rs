@@ -1,7 +1,8 @@
-//! Monochrome terminal output for the nightshift CLI.
+//! Cooked (non-`--tui`) monochrome terminal output for the nightshift CLI.
 //!
 //! Uses bold and dim ANSI attributes only so output stays readable in any
-//! terminal theme. Section headers use horizontal rules only.
+//! terminal theme. Section headers use horizontal rules only. The Watch Board
+//! lives in [`crate::tui`].
 
 use std::io::{IsTerminal, Write};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -15,14 +16,6 @@ const RESET: &str = "\x1b[0m";
 
 fn use_styles() -> bool {
     std::io::stdout().is_terminal()
-}
-
-fn bold(text: &str) -> String {
-    if use_styles() {
-        format!("{BOLD}{text}{RESET}")
-    } else {
-        text.to_string()
-    }
 }
 
 fn dim(text: &str) -> String {
@@ -40,15 +33,26 @@ fn horizontal_rule() -> String {
 fn banner_title(content: &str) -> String {
     let max_len = BORDER_WIDTH;
     if content.len() > max_len {
-        format!("{}...", &content[..max_len.saturating_sub(3)])
+        let end = content.floor_char_boundary(max_len.saturating_sub(3));
+        format!("{}...", &content[..end])
     } else {
         content.to_string()
     }
 }
 
+// Clip the plain title before wrapping complete bold/reset sequences.
+fn format_banner_line(title: &str, styled: bool) -> String {
+    let clipped = banner_title(title);
+    if styled {
+        format!("{BOLD}{clipped}{RESET}")
+    } else {
+        clipped
+    }
+}
+
 fn print_banner(out: &mut impl Write, title: &str) -> std::io::Result<()> {
     writeln!(out, "{}", horizontal_rule())?;
-    writeln!(out, "{}", banner_title(title))?;
+    writeln!(out, "{}", format_banner_line(title, use_styles()))?;
     writeln!(out, "{}", horizontal_rule())
 }
 
@@ -111,7 +115,7 @@ fn dry_run_assignment_line(
 /// Prints the session header when a PRD loop starts.
 pub fn session_start(prd: u32) {
     let mut out = std::io::stdout().lock();
-    let _ = print_banner(&mut out, &bold(&format!("Nightshift  PRD #{prd}")));
+    let _ = print_banner(&mut out, &format!("Nightshift  PRD #{prd}"));
     let _ = writeln!(out, "{}", dim(&format!("started {}", format_timestamp())));
 }
 
@@ -126,7 +130,7 @@ impl IssueRun {
     pub fn begin(number: u32, title: &str) -> Self {
         let mut out = std::io::stdout().lock();
         let _ = writeln!(out);
-        let _ = print_banner(&mut out, &bold(&format!("Issue #{number}  {title}")));
+        let _ = print_banner(&mut out, &format!("Issue #{number}  {title}"));
         Self {
             number,
             started: Instant::now(),
@@ -149,10 +153,7 @@ impl IssueRun {
         let elapsed = format_elapsed(self.started.elapsed());
         let mut out = std::io::stdout().lock();
         let _ = writeln!(out);
-        let _ = print_banner(
-            &mut out,
-            &bold(&format!("Completed  issue #{}", self.number)),
-        );
+        let _ = print_banner(&mut out, &format!("Completed  issue #{}", self.number));
         let _ = writeln!(out, "{}", dim(&format!("elapsed {elapsed}")));
     }
 }
@@ -165,7 +166,7 @@ pub fn dry_run_planned_order(
 ) {
     let mut out = std::io::stdout().lock();
     let _ = writeln!(out);
-    let _ = print_banner(&mut out, &bold("Dry run  planned issue order"));
+    let _ = print_banner(&mut out, "Dry run  planned issue order");
 
     if planned.is_empty() {
         let _ = writeln!(out, "{}", dim("(no issues would be solved)"));
@@ -202,7 +203,7 @@ pub fn dry_run_prompt(prompt: &str) {
 pub fn loop_complete(message: &str) {
     let mut out = std::io::stdout().lock();
     let _ = writeln!(out);
-    let _ = print_banner(&mut out, &bold(message));
+    let _ = print_banner(&mut out, message);
 }
 
 /// Prints git hygiene status in dim text.
@@ -290,5 +291,25 @@ mod tests {
         assert!(!title.contains('|'));
         assert!(title.len() <= BORDER_WIDTH);
         assert!(title.ends_with("..."));
+        assert_eq!(title, format!("{}...", "x".repeat(BORDER_WIDTH - 3)));
+    }
+
+    #[test]
+    fn banner_title_clips_multibyte_issue_title_on_char_boundary() {
+        let title = format!("Issue #42  {}", "字😀".repeat(30));
+        let clipped = banner_title(&title);
+        assert!(clipped.ends_with("..."), "{clipped}");
+        assert!(clipped.len() <= BORDER_WIDTH, "{}", clipped.len());
+        assert_eq!(clipped.chars().last(), Some('.'));
+    }
+
+    #[test]
+    fn format_banner_line_keeps_ansi_reset_when_clipping_long_title() {
+        let title = format!("Issue #9  {}", "字".repeat(40));
+        let line = format_banner_line(&title, true);
+        assert!(line.starts_with(BOLD), "{line:?}");
+        assert!(line.ends_with(RESET), "{line:?}");
+        assert!(line.contains("..."), "{line:?}");
+        assert_eq!(line.matches(RESET).count(), 1, "{line:?}");
     }
 }

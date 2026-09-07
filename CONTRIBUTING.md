@@ -81,8 +81,8 @@ Do not infer flags from a blog post, another wrapper, or a model catalog. If loc
 
     ```bash
     cargo fmt --check
-    cargo test
-    cargo clippy --all-targets -- -D warnings
+    cargo test --all-features
+    cargo clippy --all-targets --all-features -- -D warnings
     ```
 
 ---
@@ -134,7 +134,7 @@ Tests live next to the code they guard: `#[cfg(test)]` modules at the bottom of 
 
 New tests should stay deterministic: `cargo test` should be fast and pass without `gh` being installed or the user being logged in. If a test would require a real clone, remote, or agent binary, extend the pure logic tests instead, or document manual verification.
 
-Process-runner integration tests live in [`tests/process_agent_runner.rs`](tests/process_agent_runner.rs). They fake agent CLIs via `PATH` and a small cross-platform `nightshift-fake-agent` binary (not shell scripts). CI runs `cargo test --all` on Linux and Windows.
+Process-runner integration tests live in [`tests/process_agent_runner.rs`](tests/process_agent_runner.rs). They fake agent CLIs via `PATH` and a small cross-platform `nightshift-fake-agent` binary (not shell scripts). That binary and this test file are gated behind the non-default `fake-agent` feature so `cargo install` does not ship the test binary, so run them with `cargo test --all-features`. CI runs `cargo test --all --all-features` on Linux and Windows.
 
 ---
 

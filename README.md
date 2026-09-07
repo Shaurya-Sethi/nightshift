@@ -19,10 +19,16 @@ nightshift autonomously works through your GitHub issues while you are afk. Poin
 ## Installation
 
 ```bash
-cargo install --git https://github.com/Shaurya-Sethi/nightshift
+cargo install nightshift-cli
 ```
 
-This places the `nightshift` binary in `~/.cargo/bin`, which is on your `$PATH` after a standard Rust install.
+The crate is published as `nightshift-cli`; the installed command is `nightshift`. This places the `nightshift` binary in `~/.cargo/bin`, which is on your `$PATH` after a standard Rust install.
+
+For the latest unreleased code:
+
+```bash
+cargo install --git https://github.com/Shaurya-Sethi/nightshift
+```
 
 ## Usage
 

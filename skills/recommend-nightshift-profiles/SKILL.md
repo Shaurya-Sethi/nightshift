@@ -8,9 +8,9 @@ description: Recommend per-issue Invocation Profiles and a copy-ready nightshift
 
 Advice-only skill. Recommend **Invocation Profiles** (agent + model + reasoning effort) for the **Simulated Solvable Set** of a PRD, then emit a **copy-ready live** `nightshift` command. No tracker writes. No profile-map files. No TUI simulation.
 
-North star: **best fit** per issue — no **overkill**, no **underpowered**. Each recommendation needs a short **why**.
+North star: **best fit** per issue, with no **overkill** and no **underpowered**. Each recommendation needs a short **why**.
 
-Ideal prior flow: plan → `to-nightshift-prd` → `to-nightshift-issues` → this skill. Works without that history if PRD id and repo context exist.
+Ideal prior flow: plan with an agent (or otherwise) → `to-nightshift-prd` → `to-nightshift-issues` → this skill. Works without that history if PRD id and repo context exist.
 
 ## Process
 
@@ -18,26 +18,26 @@ Ideal prior flow: plan → `to-nightshift-prd` → `to-nightshift-issues` → th
 
 Ask, in order:
 
-1. **Whole-run default agent** — required `--agent` (see README agent matrix). Blank agent rows and no-pick runs keep this value.
-2. **Granularity** — one whole-PRD profile vs fine-grained per issue.
-3. If fine-grained — which **Preflight Dimensions** to enable:
-   - **Agent dimension** (`--pick-agents`) — optional; orthogonal to the others.
-   - **Effort dimension** (`--pick-efforts`) **or** **model dimension** (`--pick-models`) — mutually exclusive; either may stack with `--pick-agents`.
-4. **Models under consideration** — user names the allowlist and/or whole-run pin. Do **not** scrape agent model catalogs. When `--pick-agents` is on and agents will differ, collect model notes **per candidate agent** the user might choose (still user-supplied, not catalog scrape).
+1. **Whole-run default agent**: required `--agent` (see README agent matrix). Blank agent rows and no-pick runs keep this value.
+2. **Granularity**: one whole-PRD profile vs fine-grained per issue.
+3. If fine-grained, which **Preflight Dimensions** to enable:
+   - **Agent dimension** (`--pick-agents`): optional; orthogonal to the others.
+   - **Effort dimension** (`--pick-efforts`) **or** **model dimension** (`--pick-models`): mutually exclusive; either may stack with `--pick-agents`.
+4. **Models under consideration**: user names the allowlist and/or whole-run pin. Do **not** scrape agent model catalogs. When `--pick-agents` is on and agents will differ, collect model notes **per candidate agent** the user might choose (still user-supplied, not catalog scrape).
 
 **Capability hard-stop** before any dry-run: check chosen whole-run agent and enabled dimensions against this repo's README agent matrix. Refuse illegal whole-run combos. Point at the matrix; do not invent argv.
 
 Rules of thumb:
 
 - **No `--pick-agents`:** whole-run agent must support every enabled knob. Examples that hard-fail: Antigravity with any model/effort/pick-models/pick-efforts; `--pick-efforts` on Cursor; separate effort on Model-Encoded Effort agents; whole-run `--model` / `--reasoning-effort` on Antigravity.
-- **With `--pick-agents`:** whole-run model/effort still validated against `--agent` only. Per-row unsupported knobs use **Row-Capable Columns** (skip with short reason) — Cursor skips separate effort; Antigravity skips model and effort. Do not refuse the whole run just because some planned row might pick Cursor/Antigravity.
+- **With `--pick-agents`:** whole-run model/effort still validated against `--agent` only. Per-row unsupported knobs use **Row-Capable Columns** (skip with short reason): Cursor skips separate effort; Antigravity skips model and effort. Do not refuse the whole run just because some planned row might pick Cursor/Antigravity.
 - `--pick-efforts` and `--pick-models` stay mutually exclusive even when stacked with `--pick-agents`.
 
 **Done when:** default agent, dimensions (or whole-PRD), and model allowlist/pin are explicit, and the combo is capability-legal.
 
 ### 2. Resolve execution scope
 
-Infer the repository from `gh` in the current working directory, exactly as `to-nightshift-prd` and `to-nightshift-issues` do. Ask only if `gh` cannot detect a repo or the user wants a different one. Pass `--repo owner/name` only then. **PRD id** is runtime input — take from conversation (e.g. just-published issue number) or ask.
+Infer the repository from `gh` in the current working directory, exactly as `to-nightshift-prd` and `to-nightshift-issues` do. Ask only if `gh` cannot detect a repo or the user wants a different one. Pass `--repo owner/name` only then. **PRD id** is runtime input: take from conversation (e.g. just-published issue number) or ask.
 
 **Done when:** every flag needed for a dry-run is known (`--prd`, `--agent` at minimum; `--repo` only when cwd detection is not enough).
 
@@ -52,7 +52,7 @@ nightshift --prd <prd_id> --agent <agent> --dry-run
 
 **Never** pass `--pick-agents`, `--pick-models`, `--pick-efforts`, or `--pick-prompts` on this planning dry-run (those force interactive preflight).
 
-Parse the planned order — that is the **Simulated Solvable Set**. Empty set → stop; no recommendations.
+Parse the planned order. That is the **Simulated Solvable Set**. Empty set → stop; no recommendations.
 
 Missing binary → stop with install hint from repo README (`cargo install --git …`).
 
@@ -68,7 +68,7 @@ If research fails for a model: **block** until search works **or** the user supp
 
 ### 5. Recommend profiles
 
-Using PRD, issue bodies, and codebase as needed (fetch/read however repo practice dictates — not prescribed here), assign **best fit** profiles in **planned dry-run order**.
+Using PRD, issue bodies, and codebase as needed (fetch/read however repo practice dictates; not prescribed here), assign **best fit** profiles in **planned dry-run order**.
 
 | Mode | Assign |
 |---|---|
@@ -83,8 +83,8 @@ Using PRD, issue bodies, and codebase as needed (fetch/read however repo practic
 
 **Row-Capable Columns (recommendations must match real preflight):**
 
-- **Cursor:** effort lives in the model slug — recommend slugs, not a separate effort column value Nightshift would pass. Table effort cell = `—`. Cursor is invoked as `agent`, not `cursor-agent`.
-- **Antigravity:** no model/effort columns — recommend agent only; model/effort cells = `—`.
+- **Cursor:** effort lives in the model slug, so recommend slugs, not a separate effort column value Nightshift would pass. Table effort cell = `n/a`. Cursor is invoked as `agent`, not `cursor-agent`.
+- **Antigravity:** no model/effort columns, so recommend agent only; model/effort cells = `n/a`.
 - Other agents: use README matrix enums for effort; free-string models from the user allowlist.
 
 **Done when:** every planned issue has a recommendation and a short **why** defending fit (not overkill, not underpowered), including why that agent when agents vary.
@@ -101,7 +101,7 @@ Note: `--prompt-file` still overrides built-ins for every issue that does not pi
 
 Print in this order:
 
-1. **Mode summary** — whole-run `--agent`, enabled Preflight Dimensions (or whole-PRD), pin/allowlist, extras. Mention Same-Agent Defaults Inheritance when agents may differ.
+1. **Mode summary**: whole-run `--agent`, enabled Preflight Dimensions (or whole-PRD), pin/allowlist, extras. Mention Same-Agent Defaults Inheritance when agents may differ.
 2. **Recommendations**
    - Whole-PRD: one profile (agent + model + effort as applicable) + why.
    - Pick modes: markdown table **before** the command. Columns depend on enabled dimensions:
@@ -114,14 +114,14 @@ Print in this order:
      | agents + efforts | `\| order \| id \| title \| agent \| effort \| why \|` |
      | agents + models | `\| order \| id \| title \| agent \| model \| effort \| why \|` |
 
-     Use `—` when a cell is not applicable (Cursor model-encoded effort, Antigravity model/effort, agent-only mode, cascade-to-default).
-3. **Copy-ready live command** — fenced full argv for starting the loop (**no** `--dry-run`), including:
+     Use `n/a` when a cell is not applicable (Cursor model-encoded effort, Antigravity model/effort, agent-only mode, cascade-to-default).
+3. **Copy-ready live command**: fenced full argv for starting the loop (**no** `--dry-run`), including:
    - scope flags: `--prd`, `--agent`, and `--repo` only when needed
    - whole-run: `--model` / `--reasoning-effort` when set (remember: these pre-fill / cascade only for rows that keep `--agent`)
    - fine-grained: any of `--pick-agents`, `--pick-efforts`, `--pick-models`, `--pick-prompts` that the interview chose (`--pick-efforts` xor `--pick-models`; `--pick-agents` and `--pick-prompts` free to stack)
    - accepted extras
-4. **Soft hint** — user may append `--dry-run` to preview plan/preflight without invoking agents. Pick flags still run interactive preflight under dry-run.
+4. **Soft hint**: user may append `--dry-run` to preview plan/preflight without invoking agents. Pick flags still run interactive preflight under dry-run.
 
 Pick-mode table is the human crib sheet for the real TTY preflight; it is **not** encoded into argv (Nightshift has no profile-map file flag). Preflight column order is agent → model → effort → prompt → mode for enabled columns (model/effort still skip when the row agent cannot use them; prompt/mode appear only with `--pick-prompts`). Single proceed/abort confirm after all rows.
 
-**Done when:** summary + recs + live command + dry-run hint are all present. Skill ends (advice only — do not start the loop unless the user separately asks).
+**Done when:** summary + recs + live command + dry-run hint are all present. Skill ends (advice only; do not start the loop unless the user separately asks).

@@ -6,7 +6,7 @@ nightshift is a small, focused tool and I would like to keep it that way. Contri
 
 ## Tier 1: Adding a new agent
 
-Adding a coding-agent CLI requires command wiring, Invocation Profile capability handling, tests, and docs. Most implementation lives in [`src/agent.rs`](src/agent.rs); user-facing behavior belongs in [`README.md`](README.md) and clap help in [`src/cli.rs`](src/cli.rs).
+Adding a coding-agent CLI requires command wiring, Invocation Profile capability handling, tests, and docs. Most implementation lives in [`src/agent.rs`](src/agent.rs); user-facing behavior belongs in [`README.md`](README.md), [`docs/invocation-profiles.md`](docs/invocation-profiles.md), and clap help in [`src/cli.rs`](src/cli.rs). Keep the README summary short; picker rules and agent-specific knobs go in the invocation-profiles doc.
 
 > [!NOTE]
 > Before code, verify that the CLI accepts a prompt via stdin and exits non-zero on failure. nightshift relies on both.
@@ -74,6 +74,7 @@ Do not infer flags from a blog post, another wrapper, or a model catalog. If loc
 7. Update docs and help:
 
     - Add the agent to README's Supported Agents table with model and effort support, wiring, accepted values, and caveats.
+    - Update [`docs/invocation-profiles.md`](docs/invocation-profiles.md) if the agent has picker knobs or skip rules users need.
     - Update clap flag help for agent-specific restrictions users need before a run.
     - For Model-Encoded Effort, state plainly that effort is chosen by model slug, not a fake effort flag or bracket injection.
 

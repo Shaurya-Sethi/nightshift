@@ -1,10 +1,10 @@
 # nightshift
 
-[![CI](https://img.shields.io/github/actions/workflow/status/Shaurya-Sethi/nightshift/ci.yml?branch=main&logo=github)](https://github.com/Shaurya-Sethi/nightshift/actions/workflows/ci.yml) [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE) [![Rust 2024](https://img.shields.io/badge/rust-2024-%23b7410e?logo=rust)](https://www.rust-lang.org)
+[![CI](https://img.shields.io/github/actions/workflow/status/Shaurya-Sethi/nightshift/ci.yml?branch=main&logo=github)](https://github.com/Shaurya-Sethi/nightshift/actions/workflows/ci.yml) [![crates.io](https://img.shields.io/crates/v/nightshift-cli)](https://crates.io/crates/nightshift-cli) [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE) [![Rust 2024](https://img.shields.io/badge/rust-2024-%23b7410e?logo=rust)](https://www.rust-lang.org)
 
 Go to sleep with a backlog and wake up with merged PRs.
 
-nightshift autonomously works through your GitHub issues while you are afk. Point it at a PRD, pick your [favourite coding agent](#supported-agents), and it handles the rest: branch, implement, PR, merge, repeat. It stops when every child issue is done. Inspired by the [Ralph Wiggum](https://ghuntley.com/loop/) loop pattern.
+nightshift autonomously works through your GitHub issues while you are afk. Point it at a PRD (a Product Requirements Document, or spec, published as a GitHub issue), pick your [favourite coding agent](#supported-agents), and it handles the rest: branch, implement, PR, merge, repeat. It stops when every child issue is done. Inspired by the [Ralph Wiggum](https://ghuntley.com/loop/) loop pattern.
 
 > [!WARNING]
 > **nightshift selects work from native GitHub relationships, not issue-body text.** Child issues must be sub-issues of the PRD (`gh issue create --parent`), declare dependencies with `--blocked-by`, and carry the `ready-for-agent` label. Bodies are not parsed for membership or ordering. The bundled [skills](#skills) produce exactly this shape.
@@ -58,18 +58,13 @@ nightshift --prd 12 --agent claude --tui
 
 ### Invocation profiles
 
-An **Invocation Profile** is agent plus model plus reasoning effort for one invocation. `--agent` remains required as whole-run default. Start with defaults, then add optional composable Preflight Dimensions:
+An **invocation profile** is the agent, model, and reasoning effort used for one issue.
 
-1. **Whole-run defaults:** pass `--agent` with optional `--model` and `--reasoning-effort`. Every invocation uses supplied fields; omitted fields remain agent defaults.
-2. **Agent dimension:** pass `--pick-agents`. Pick one full nightshift-compatible agent per member of the simulated solvable plan; Enter keeps `--agent` for that row. Agent choice is in-memory for this run only.
-3. **Effort dimension:** pass `--pick-efforts` with optional whole-run defaults. Pick one effort key for each member of the simulated solvable plan; model remains fixed from `--model` or agent default.
-4. **Model dimension:** pass `--pick-models` with optional whole-run defaults. Enter a free-string model and choose effort where supported for each planned issue.
+`--agent` is required and is the default for the whole run. Optional `--model` and `--reasoning-effort` apply to every issue unless a picker overrides them.
 
-`--pick-efforts` and `--pick-models` are mutually exclusive. `--pick-agents` stacks with either: `--pick-agents --pick-efforts` collects agent then effort; `--pick-agents --pick-models` collects agent then model then effort. `--pick-prompts` stacks with the other pick flags. Column order is agent → model → effort → prompt → mode. Agent picker prints one numbered legend for all compatible agents; it never probes `PATH`. In every picker, Enter leaves field blank. A blank agent keeps `--agent`; blank model or effort cascades to whole-run default and then agent default. A blank prompt path inherits the run-wide prompt policy; a supplied path fully overrides that policy (append or replace of that file against resolved-agent built-ins). Enter on mode defaults to append. When an Agent Preflight row chooses another agent, whole-run `--model` and `--reasoning-effort` do not cross that boundary: that agent uses its own defaults. This is **Same-Agent Defaults Inheritance**.
+To choose per issue, add any of `--pick-agents`, `--pick-efforts`, `--pick-models`, or `--pick-prompts` (TTY only). `--pick-efforts` and `--pick-models` cannot be combined; the other pick flags stack with either. Enter keeps a default. `q` or Ctrl-C cancels the whole picker; a partial selection never starts a run.
 
-Picker is one in-memory batch before the loop, covering the **Simulated Solvable Set** (planned issues, including those blocked only by another planned issue). Press `q` or Ctrl-C to abort; no partial selection starts a run. Built-in directives follow the resolved agent. `--prompt-file` overrides them for every issue that does not pick a file; `--append-prompt-file` appends to resolved-agent built-ins for those issues. Pick modes need a TTY (else fail fast to whole-run `--agent`, `--model`, `--reasoning-effort`, `--prompt-file`, and `--append-prompt-file`). Cooked preflight still runs before `--tui` takes the terminal. Without `--pick-agents`, `--pick-efforts` is only for `pi`, `copilot`, `claude`, `codex`, and `opencode`; Cursor `--pick-models` is model-only; Antigravity supports neither. With `--pick-agents`, each row skips unsupported knobs (Cursor: no separate effort; Antigravity: no model or effort).
-
-`--dry-run` does not skip a requested picker: complete preflight first, then nightshift prints every planned issue with resolved agent, model, and effort, first issue's prompt, and its would-invoke command. No agent process starts. Without a picker, dry-run resolves rows from whole-run defaults and agent defaults. `--tui --dry-run` shows that same plan on the board without spawning; the planned-order / would-invoke / first-prompt preview prints after you dismiss. Without `--tui`, dry-run output is unchanged.
+Picker order, inheritance, dry-run, and agent-specific knobs: [Invocation profiles](docs/invocation-profiles.md).
 
 ## Supported Agents
 
@@ -92,7 +87,7 @@ nightshift hands your agent a single prompt per issue. These agents work out of 
 
 When `--model` is omitted, nightshift lets the selected agent use its persisted default model. When it is provided, nightshift passes it through unchanged for agents with a documented non-interactive model flag. If an agent does not support that flag, nightshift fails fast and tells you to retry without `--model`.
 
-nightshift validates at the **capability level** only: whether the selected agent supports model or effort selection, and—except for OpenCode's pass-through variants—whether an effort is in nightshift's documented agent-native set. It does not scrape model catalogs, validate model names, rewrite model slugs, or enforce model-specific effort matrices. The selected agent remains responsible for accepting a model and any model-specific effort subset.
+nightshift validates at the **capability level** only: whether the selected agent supports model or effort selection, and, except for OpenCode's pass-through variants, whether an effort is in nightshift's documented agent-native set. It does not scrape model catalogs, validate model names, rewrite model slugs, or enforce model-specific effort matrices. The selected agent remains responsible for accepting a model and any model-specific effort subset.
 
 To add support for a new agent, see [CONTRIBUTING.md](CONTRIBUTING.md).
 
@@ -104,37 +99,33 @@ Each iteration starts from a clean state: nightshift checks out and pulls your b
 
 For the selected issue, nightshift constructs a unified prompt and pipes it to the coding agent via `stdin`. For details on prompt structures, default instructions, custom directives, and how nightshift manages isolated session context, see the [Context Management & Session Lifecycle Guide](docs/context-management.md).
 
-> [!NOTE]
-> **Terminal Output Behavior**: Without `--tui`, the terminal shows only `nightshift` orchestrator output (issue blocks, git hygiene, completion footers) while an agent runs. `--tui` replaces that cooked stream with a full-screen Watch Board, and git checkout/pull output is not shown. In both modes, agent `stdout` and `stderr` are discarded; use the agent's own UI or history for session detail. On failure, `nightshift` reports the process exit status (and a `--model` retry hint when applicable), not agent log text. The board keeps the error visible until `q`, Ctrl-C, or Enter; the original exit status is preserved. While work is active, `q` and Ctrl-C stop after the current issue or at the next safe git/GitHub boundary — the running agent is not killed or detached, and the next issue is not started. When the board is idle, `q`, Ctrl-C, or Enter dismisses it.
+Without `--tui`, the terminal shows only nightshift's own output (issue blocks, git hygiene, completion). `--tui` replaces that with a full-screen Watch Board. Agent `stdout` and `stderr` are discarded in both modes; use the agent's own UI or history for session detail. On failure, nightshift reports the process exit status, not agent log text. While the board is active, `q` / Ctrl-C stop after the current issue without killing the agent.
+
+Details: [Terminal output](docs/terminal-output.md).
 
 After the agent exits, nightshift checks that the issue is actually closed on GitHub. If it is, the loop continues from step one. If not, nightshift stops and tells you; the agent may have exited cleanly but left the issue open, which usually means something needs your attention.
 
-Example assignment line:
-
-```text
-1. issue #10  Child 10  agent pi  model issue-model  reasoning effort high
-```
-
 ## Skills
 
-Writing sub-issues and blocked-by links by hand is tedious, so nightshift ships three agent skills under [`skills/`](skills/):
+nightshift ships three agent skills under [`skills/`](skills/). They make it easy to publish a PRD, create child issues with the right parent and blocked-by links, and get a nightshift command that matches how you want to run.
 
-- **`to-nightshift-prd`**: turns the current conversation into a PRD (problem, solution, user stories, implementation and testing decisions) and publishes it as a GitHub issue.
-- **`to-nightshift-issues`**: breaks a PRD into tracer-bullet vertical slices and publishes each as a sub-issue of the PRD via `gh issue create --parent`, with `--blocked-by` links and the `ready-for-agent` label (or `ready-for-human` for slices that need a person). It creates the labels if they are missing.
-- **`recommend-nightshift-profiles`**: recommends best-fit Invocation Profiles for the planned dry-run order of a PRD and emits a copy-ready `nightshift` start command (advice only; no profile-map file).
+| Skill | Description |
+| ----- | ----------- |
+| `to-nightshift-prd` | Turn the current conversation into a PRD and publish it as a GitHub issue. |
+| `to-nightshift-issues` | Break a PRD into tracer-bullet sub-issues with `--parent`, `--blocked-by`, and `ready-for-agent` (or `ready-for-human`). Creates the labels if missing. |
+| `recommend-nightshift-profiles` | Recommend invocation profiles for a PRD's planned order and emit a copy-ready `nightshift` command (advice only). |
 
-The intended flow is `to-nightshift-prd` → `to-nightshift-issues` → `recommend-nightshift-profiles` (optional) → `nightshift --dry-run` → `nightshift`. The first two skills need an authenticated `gh` (see [Prerequisites](#prerequisites)) and publish to the repository `gh` detects from your working directory.
+Flow: plan with an agent (or otherwise) → `to-nightshift-prd` → `to-nightshift-issues` → `recommend-nightshift-profiles` (optional) → `nightshift --dry-run` → `nightshift`. The first two skills need an authenticated `gh`.
 
 ### Installing
 
-Copy the skill folders into wherever your agent discovers skills, in the repository you want issues for:
+Recommended (requires Node for `npx`):
 
 ```bash
-cp -r /path/to/nightshift/skills/* /path/to/your/project/.agents/skills/   # project
-cp -r /path/to/nightshift/skills/* ~/.agents/skills/ # global
+npx skills add Shaurya-Sethi/nightshift
 ```
 
-Then invoke them by name in your agent.
+No Node? Clone this repo and copy `skills/` into your agent's skills directory.
 
 ## Keeping Your System Awake
 

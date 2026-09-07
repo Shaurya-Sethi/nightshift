@@ -8,7 +8,7 @@ disable-model-invocation: true
 
 This skill takes the current conversation context and codebase understanding and produces a Product Requirements Document (PRD), publishing it directly as a GitHub issue in the current repository.
 
-Do NOT interview the user — just synthesize what you already know.
+Do NOT interview the user; just synthesize what you already know.
 
 The target repository is auto-detected by `gh` from the current working directory, exactly as nightshift itself does. Only pass `-R owner/repo` if the user asks for a different repository.
 
@@ -64,7 +64,7 @@ A list of implementation decisions that were made. This can include:
 
 Do NOT include specific file paths or code snippets. They may end up being outdated very quickly.
 
-Exception: if a prototype produced a snippet that encodes a decision more precisely than prose can (state machine, reducer, schema, type shape), inline it within the relevant decision and note briefly that it came from a prototype. Trim to the decision-rich parts — not a working demo, just the important bits.
+Exception: if a prototype produced a snippet that encodes a decision more precisely than prose can (state machine, reducer, schema, type shape), inline it within the relevant decision and note briefly that it came from a prototype. Trim to the decision-rich parts, not a working demo, just the important bits.
 
 ## Testing Decisions
 

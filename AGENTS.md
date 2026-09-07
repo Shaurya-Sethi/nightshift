@@ -13,5 +13,5 @@
 
 - follow pragmatic test driven development inline with the testing philosophy documented in `CONTRIBUTING.md`
 - always read documentation before changing code or implementing anything new.
-  - official upstream docs — use web search or browse local source.
+  - official upstream docs: use web search or browse local source.
   - current repo code, tests, public interfaces.

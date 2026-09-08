@@ -159,6 +159,8 @@ pub struct IssueRow {
     pub model: Option<String>,
     /// Resolved effort, or `None` for the agent default.
     pub effort: Option<String>,
+    /// Time spent on this issue. `None` if it has not started.
+    pub elapsed: Option<Duration>,
 }
 
 /// Planned or blocked roster identity plus resolved invocation profile.
@@ -180,6 +182,7 @@ impl RosterIssue {
             agent: self.agent,
             model: self.model,
             effort: self.effort,
+            elapsed: None,
         }
     }
 }
@@ -270,7 +273,7 @@ impl Watch for WatchLog {
     }
 }
 
-/// Live orchestration phase shown in the profile pane.
+/// Live orchestration phase shown on the header counts line.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Phase {
     /// Board is idle before work starts.
@@ -306,10 +309,9 @@ pub enum Phase {
 impl Phase {
     fn label(&self) -> String {
         match self {
-            Self::Idle => "idle".to_string(),
+            Self::Idle => String::new(),
             Self::Hygiene => "git hygiene".to_string(),
-            Self::Dispatch { issue } => format!("dispatch #{issue}"),
-            Self::Running { issue } => format!("agent #{issue}"),
+            Self::Dispatch { issue } | Self::Running { issue } => format!("running #{issue}"),
             Self::Verify { issue } => format!("verify #{issue}"),
             Self::Done => "done".to_string(),
             Self::Failed { issue, .. } => format!("failed #{issue}"),
@@ -362,8 +364,10 @@ pub struct BoardState {
     pub selected: usize,
     /// Current orchestration phase.
     pub phase: Phase,
-    /// Elapsed time for the current phase or run.
+    /// Elapsed time for the whole run. Frozen once the board can dismiss.
     pub elapsed: Duration,
+    /// Run elapsed when the in-flight issue's clock started.
+    issue_origin: Option<Duration>,
     /// Whether the `?` help overlay is open.
     pub help_open: bool,
     /// Live orchestration board, not the offline preview.
@@ -391,6 +395,7 @@ impl BoardState {
                     agent: "pi".to_string(),
                     model: Some("pi-default".to_string()),
                     effort: Some("low".to_string()),
+                    elapsed: Some(Duration::from_secs(32)),
                 },
                 IssueRow {
                     number: 12,
@@ -399,6 +404,7 @@ impl BoardState {
                     agent: "pi".to_string(),
                     model: Some("composer".to_string()),
                     effort: Some("high".to_string()),
+                    elapsed: Some(Duration::from_secs(75)),
                 },
                 IssueRow {
                     number: 13,
@@ -407,6 +413,7 @@ impl BoardState {
                     agent: "claude".to_string(),
                     model: None,
                     effort: None,
+                    elapsed: None,
                 },
                 IssueRow {
                     number: 14,
@@ -415,6 +422,7 @@ impl BoardState {
                     agent: "pi".to_string(),
                     model: None,
                     effort: Some("medium".to_string()),
+                    elapsed: None,
                 },
                 IssueRow {
                     number: 16,
@@ -423,11 +431,13 @@ impl BoardState {
                     agent: "codex".to_string(),
                     model: Some("gpt".to_string()),
                     effort: Some("high".to_string()),
+                    elapsed: Some(Duration::from_secs(8)),
                 },
             ],
             selected: 1,
             phase: Phase::Running { issue: 12 },
             elapsed: Duration::from_secs(75),
+            issue_origin: Some(Duration::ZERO),
             help_open: false,
             live: false,
             stop_pending: false,
@@ -446,6 +456,7 @@ impl BoardState {
             selected: 0,
             phase: Phase::Idle,
             elapsed: Duration::ZERO,
+            issue_origin: None,
             help_open: false,
             live: true,
             stop_pending: false,
@@ -471,6 +482,22 @@ impl BoardState {
             }
         }
         counts
+    }
+
+    /// Advance run and in-flight issue clocks. Frozen once the board can dismiss.
+    pub fn tick(&mut self, started: Instant) {
+        if self.can_dismiss() {
+            return;
+        }
+        self.elapsed = started.elapsed();
+        if let Some(origin) = self.issue_origin
+            && let Some(row) = self
+                .issues
+                .iter_mut()
+                .find(|row| row.status == IssueStatus::Running)
+        {
+            row.elapsed = Some(self.elapsed.saturating_sub(origin));
+        }
     }
 
     /// Selected roster row, if any.
@@ -656,6 +683,10 @@ impl BoardState {
             && !matches!(row.status, IssueStatus::Completed | IssueStatus::Failed)
         {
             row.status = IssueStatus::Running;
+            if row.elapsed.is_none() {
+                row.elapsed = Some(Duration::ZERO);
+                self.issue_origin = Some(self.elapsed);
+            }
         }
         self.select_number(issue);
     }
@@ -665,6 +696,7 @@ impl BoardState {
             row.status = status;
         }
         self.select_number(issue);
+        self.issue_origin = None;
     }
 }
 
@@ -848,12 +880,6 @@ fn take_events(state: &mut BoardState, rx: &mpsc::Receiver<WatchEvent>) -> Chann
     ChannelDrain { received }
 }
 
-fn tick_elapsed(state: &mut BoardState, started: Instant) {
-    if !state.can_dismiss() {
-        state.elapsed = started.elapsed();
-    }
-}
-
 /// Success emits [`WatchEvent::Done`]. Errors emit [`WatchEvent::Ended`] so
 /// the board can dismiss without replacing an issue-specific failure. A panic
 /// still emits [`WatchEvent::Failed`] on the PRD and asks the UI to abort.
@@ -907,22 +933,17 @@ fn ui_loop_inner(
 ) -> io::Result<()> {
     let theme = Theme::from_env();
     let mut state = BoardState::live_run(header.prd, header.repo, header.branch);
-    let mut phase_started = Instant::now();
+    let run_started = Instant::now();
     let mut drawn = false;
     loop {
         if abort.load(Ordering::SeqCst) {
             return Ok(());
         }
-        let before = std::mem::discriminant(&state.phase);
         let drain = take_events(&mut state, &rx);
         if abort.load(Ordering::SeqCst) {
             return Ok(());
         }
-        let phase_changed = std::mem::discriminant(&state.phase) != before;
-        if phase_changed && !state.can_dismiss() {
-            phase_started = Instant::now();
-        }
-        tick_elapsed(&mut state, phase_started);
+        state.tick(run_started);
         let waiting = state.can_dismiss();
         if !waiting || drain.received || !drawn {
             terminal.draw(|frame| render(frame, &state, &theme))?;
@@ -1095,7 +1116,14 @@ fn render_header(
 fn counts_line<'a>(state: &'a BoardState, theme: Theme) -> Line<'a> {
     let counts = state.counts();
     let mut spans = Vec::new();
+    let phase = state.phase.label();
+    if !phase.is_empty() {
+        spans.push(Span::styled(phase, theme.phase(&state.phase)));
+    }
     if let Some(notice) = &state.notice {
+        if !spans.is_empty() {
+            spans.push(Span::raw("  "));
+        }
         spans.push(Span::styled(notice.as_str(), theme.muted()));
     }
     push_count(&mut spans, counts.completed, IssueStatus::Completed, theme);
@@ -1105,6 +1133,10 @@ fn counts_line<'a>(state: &'a BoardState, theme: Theme) -> Line<'a> {
     if counts.failed > 0 {
         push_count(&mut spans, counts.failed, IssueStatus::Failed, theme);
     }
+    if !spans.is_empty() {
+        spans.push(Span::raw("  "));
+    }
+    spans.push(Span::raw(crate::console::format_elapsed(state.elapsed)));
     Line::from(spans)
 }
 
@@ -1193,26 +1225,30 @@ fn render_details(frame: &mut Frame, state: &BoardState, theme: Theme, area: Rec
 }
 
 fn detail_lines<'a>(state: &'a BoardState, theme: Theme) -> Vec<Line<'a>> {
-    let mut lines = vec![
-        Line::from(vec![
-            Span::raw("phase   "),
-            Span::styled(state.phase.label(), theme.phase(&state.phase)),
-        ]),
-        Line::from(format!(
+    let mut lines = Vec::new();
+    let selected = state.selected_issue();
+    if let Some(issue) = selected {
+        lines.push(Line::from(format!(
             "elapsed {}",
-            crate::console::format_elapsed(state.elapsed)
-        )),
-    ];
-    if let Phase::Failed { message, .. } = &state.phase {
-        for line in message.lines() {
-            lines.push(Line::from(Span::styled(
-                line.to_string(),
-                theme.status(IssueStatus::Failed),
-            )));
+            issue_elapsed_label(issue)
+        )));
+    }
+    if let Phase::Failed { issue, message } = &state.phase {
+        let on_roster = state.issues.iter().any(|row| row.number == *issue);
+        let selected_is_failed = selected.map(|row| row.number) == Some(*issue);
+        if !on_roster || selected_is_failed {
+            for line in message.lines() {
+                lines.push(Line::from(Span::styled(
+                    line.to_string(),
+                    theme.status(IssueStatus::Failed),
+                )));
+            }
         }
     }
-    let Some(issue) = state.selected_issue() else {
-        lines.push(Line::from("no issues"));
+    let Some(issue) = selected else {
+        if lines.is_empty() {
+            lines.push(Line::from("no issues"));
+        }
         return lines;
     };
     let model = issue.model.as_deref().unwrap_or("agent default");
@@ -1226,6 +1262,17 @@ fn detail_lines<'a>(state: &'a BoardState, theme: Theme) -> Vec<Line<'a>> {
     ]));
     lines.push(Line::from(Span::styled(issue.title.as_str(), theme.bold())));
     lines
+}
+
+fn issue_elapsed_label(issue: &IssueRow) -> String {
+    match issue.status {
+        IssueStatus::Queued => "not started".to_string(),
+        IssueStatus::Blocked => "waiting".to_string(),
+        _ => issue
+            .elapsed
+            .map(crate::console::format_elapsed)
+            .unwrap_or_else(|| "not started".to_string()),
+    }
 }
 
 fn render_footer(frame: &mut Frame, state: &BoardState, theme: Theme, area: Rect) {
@@ -1401,7 +1448,7 @@ mod tests {
                 "repo missing at {width}x{height}: {text}"
             );
             assert!(
-                text.contains("agent #12"),
+                text.contains("running #12"),
                 "phase missing at {width}x{height}: {text}"
             );
             assert!(
@@ -1447,9 +1494,57 @@ mod tests {
         assert!(text.contains("agent   pi"), "{text}");
         assert!(text.contains("model   composer"), "{text}");
         assert!(text.contains("effort  high"), "{text}");
-        assert!(text.contains("phase   agent #12"), "{text}");
+        assert!(text.contains("running #12"), "{text}");
+        assert!(!text.contains("phase   "), "{text}");
         assert!(text.contains("elapsed 1m 15s"), "{text}");
         assert!(text.contains("j/k select"));
+    }
+
+    #[test]
+    fn header_shows_phase_counts_and_run_elapsed() {
+        let state = BoardState::offline_preview();
+        let text = plain(&draw(&state, &Theme::native(), 100, 24));
+        assert!(text.contains("running #12"), "{text}");
+        assert!(text.contains("1 completed"), "{text}");
+        assert!(text.contains("1m 15s"), "{text}");
+        assert!(!text.contains("phase   "), "{text}");
+    }
+
+    #[test]
+    fn idle_omits_phase_from_header() {
+        let state = BoardState::live_run(42, "owner/repo".into(), "main".into());
+        let text = plain(&draw(&state, &Theme::native(), 80, 16));
+        assert!(!text.contains("idle"), "{text}");
+    }
+
+    #[test]
+    fn selected_completed_issue_shows_own_elapsed() {
+        let mut state = BoardState::offline_preview();
+        state.selected = 0;
+        let text = plain(&draw(&state, &Theme::native(), 100, 24));
+        assert!(text.contains("elapsed 32s"), "{text}");
+        assert!(!text.contains("elapsed 1m 15s"), "{text}");
+        assert!(text.contains("1m 15s"), "{text}");
+    }
+
+    #[test]
+    fn queued_and_blocked_elapsed_are_not_timers() {
+        let mut state = BoardState::offline_preview();
+        state.selected = 2;
+        let blocked = plain(&draw(&state, &Theme::native(), 100, 24));
+        assert!(blocked.contains("elapsed waiting"), "{blocked}");
+        state.selected = 3;
+        let queued = plain(&draw(&state, &Theme::native(), 100, 24));
+        assert!(queued.contains("elapsed not started"), "{queued}");
+    }
+
+    #[test]
+    fn failed_error_hidden_when_another_issue_selected() {
+        let mut state = failed_preview();
+        state.selected = 0;
+        let text = plain(&draw(&state, &Theme::native(), 80, 24));
+        assert!(!text.contains("agent exited 1"), "{text}");
+        assert!(text.contains("failed #16"), "{text}");
     }
 
     #[test]
@@ -1790,12 +1885,62 @@ mod tests {
         let mut state = BoardState::live_run(42, "owner/repo".into(), "main".into());
         state.phase = Phase::Hygiene;
         let started = Instant::now() - Duration::from_secs(5);
-        tick_elapsed(&mut state, started);
+        state.tick(started);
         assert!(state.elapsed >= Duration::from_secs(5));
         let frozen = state.elapsed;
         state.apply(WatchEvent::Done);
-        tick_elapsed(&mut state, Instant::now());
+        state.tick(Instant::now());
         assert_eq!(state.elapsed, frozen);
+    }
+
+    #[test]
+    fn issue_elapsed_survives_verify_and_freezes_when_completed() {
+        let mut state = BoardState::live_run(42, "owner/repo".into(), "main".into());
+        state.apply(WatchEvent::Roster {
+            planned: vec![roster(10, "First"), roster(11, "Second")],
+            blocked: vec![],
+        });
+        state.apply(WatchEvent::Dispatch { issue: 10 });
+        state.issues[0].elapsed = Some(Duration::from_secs(7));
+        state.apply(WatchEvent::Running { issue: 10 });
+        state.apply(WatchEvent::Verify { issue: 10 });
+        assert_eq!(state.issues[0].elapsed, Some(Duration::from_secs(7)));
+        state.apply(WatchEvent::Completed { issue: 10 });
+        assert_eq!(state.issues[0].elapsed, Some(Duration::from_secs(7)));
+        state.apply(WatchEvent::Dispatch { issue: 11 });
+        assert_eq!(state.issues[0].elapsed, Some(Duration::from_secs(7)));
+        assert_eq!(state.issues[1].elapsed, Some(Duration::ZERO));
+    }
+
+    #[test]
+    fn issue_elapsed_ticks_until_completed() {
+        let mut state = BoardState::live_run(42, "owner/repo".into(), "main".into());
+        state.apply(WatchEvent::Roster {
+            planned: vec![roster(10, "First")],
+            blocked: vec![],
+        });
+        state.apply(WatchEvent::Running { issue: 10 });
+        let started = Instant::now() - Duration::from_secs(5);
+        state.tick(started);
+        assert!(state.issues[0].elapsed.unwrap() >= Duration::from_secs(5));
+        state.apply(WatchEvent::Completed { issue: 10 });
+        let frozen = state.issues[0].elapsed;
+        state.tick(Instant::now());
+        assert_eq!(state.issues[0].elapsed, frozen);
+    }
+
+    #[test]
+    fn offline_preview_tick_advances_running_issue_only() {
+        let mut state = BoardState::offline_preview();
+        let completed = state.issues[0].elapsed;
+        let started = Instant::now() - Duration::from_secs(80);
+        state.tick(started);
+        assert!(state.elapsed >= Duration::from_secs(80));
+        assert_eq!(state.issues[0].elapsed, completed);
+        assert!(state.issues[1].elapsed.unwrap() >= Duration::from_secs(80));
+        assert_eq!(state.issues[2].elapsed, None);
+        assert_eq!(state.issues[3].elapsed, None);
+        assert_eq!(state.issues[4].elapsed, Some(Duration::from_secs(8)));
     }
 
     #[test]

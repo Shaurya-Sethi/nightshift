@@ -32,7 +32,7 @@ fn run_preview() -> io::Result<()> {
         .unwrap_or_else(Instant::now);
     let (_guard, mut terminal) = TerminalGuard::enter()?;
     loop {
-        state.elapsed = started.elapsed();
+        state.tick(started);
         terminal.draw(|frame| render(frame, &state, &theme))?;
         if !event::poll(Duration::from_millis(200))? {
             continue;

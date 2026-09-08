@@ -1,6 +1,6 @@
 [package]
 name = "nightshift-cli"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 description = "Let your favourite AI coding agents work the night shift. An agent-agnostic CLI that resolves GitHub issues in dependency order, one clean session per issue."
 license = "MIT"

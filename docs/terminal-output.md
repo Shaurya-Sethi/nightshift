@@ -14,7 +14,7 @@ Without `--tui`, the terminal shows only nightshift output: issue blocks, git ch
 
 ### Stopping
 
-While work is active, `q` and Ctrl-C stop after the current issue, or at the next safe git/GitHub boundary. The running agent is not killed or detached, and the next issue is not started.
+While work is active, `q` and Ctrl-C request stop after the current issue, or at the next safe git/GitHub boundary. Press the same key again to cancel that request. The running agent is not killed or detached, and the next issue is not started unless the stop was already honored.
 
 When the board is idle, `q`, Ctrl-C, or Enter dismisses it.
 

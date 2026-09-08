@@ -2,8 +2,8 @@
 //!
 //! `--tui` is opt-in and needs stdin and stdout TTYs. While work is active,
 //! `q` / Ctrl-C request stop after the current issue without killing the
-//! agent. Idle `q` / Ctrl-C / Enter dismisses. Preview the same renderer
-//! offline:
+//! agent; press again to cancel that request. Idle `q` / Ctrl-C / Enter
+//! dismisses. Preview the same renderer offline:
 //!
 //! ```text
 //! cargo run --example watch_board
@@ -341,7 +341,8 @@ pub enum BoardCommand {
     Continue,
     /// Leave the preview, or dismiss an idle live board.
     Quit,
-    /// Request stop after the current issue on a live board.
+    /// Request stop after the current issue on a live board. A later Continue
+    /// from the same keys means that request was cancelled.
     Stop,
 }
 
@@ -372,7 +373,7 @@ pub struct BoardState {
     pub help_open: bool,
     /// Live orchestration board, not the offline preview.
     pub live: bool,
-    /// `q` / Ctrl-C asked to stop after the current issue.
+    /// `q` / Ctrl-C asked to stop after the current issue. A second press clears it.
     pub stop_pending: bool,
 }
 
@@ -512,7 +513,8 @@ impl BoardState {
     /// Applies a key. Navigation and help stay on the board.
     ///
     /// Preview: `q` / Ctrl-C quit. Live active: those keys request stop after
-    /// the current issue. Live idle: `q` / Ctrl-C / Enter dismiss.
+    /// the current issue; a second press cancels the request. Live idle:
+    /// `q` / Ctrl-C / Enter dismiss.
     pub fn handle_key(&mut self, key: KeyEvent) -> BoardCommand {
         if key.kind != KeyEventKind::Press {
             return BoardCommand::Continue;
@@ -579,9 +581,14 @@ impl BoardState {
 
     fn quit_or_stop(&mut self) -> BoardCommand {
         if self.live && !self.can_dismiss() {
-            self.stop_pending = true;
-            self.notice = Some("stop after current issue".to_string());
-            BoardCommand::Stop
+            if self.stop_pending {
+                self.clear_stop_notice();
+                BoardCommand::Continue
+            } else {
+                self.stop_pending = true;
+                self.notice = Some("stop after current issue".to_string());
+                BoardCommand::Stop
+            }
         } else {
             BoardCommand::Quit
         }
@@ -788,9 +795,10 @@ impl Watch for LiveWatch {
 /// Runs `work` on the calling thread with a scoped UI thread for the board.
 ///
 /// The UI thread owns raw mode and the alternate screen. `q` / Ctrl-C while
-/// work is active sets the cancel flag; the orchestrator must honor it at safe
-/// boundaries. Every `work` result is turned into a terminal [`WatchEvent`]
-/// before join. Producer disconnect without Done/Failed, and a panic in `work`,
+/// work is active sets the cancel flag; a second press clears it. The
+/// orchestrator must honor the flag at safe boundaries. Every `work` result is
+/// turned into a terminal [`WatchEvent`] before join. Producer disconnect
+/// without Done/Failed, and a panic in `work`,
 /// still let the UI restore instead of hanging. Original `work` errors are
 /// preserved; success is never invented.
 ///
@@ -954,12 +962,9 @@ fn ui_loop_inner(
         }
         match event::read()? {
             Event::Key(key) if key.kind == KeyEventKind::Press => match state.handle_key(key) {
-                BoardCommand::Stop => {
-                    stop.store(true, Ordering::SeqCst);
-                    terminal.draw(|frame| render(frame, &state, &theme))?;
-                }
                 BoardCommand::Quit => return Ok(()),
-                BoardCommand::Continue => {
+                BoardCommand::Stop | BoardCommand::Continue => {
+                    stop.store(state.stop_pending, Ordering::SeqCst);
                     terminal.draw(|frame| render(frame, &state, &theme))?;
                 }
             },
@@ -1281,9 +1286,9 @@ fn render_footer(frame: &mut Frame, state: &BoardState, theme: Theme, area: Rect
     }
     let text = if state.stop_pending {
         if area.width < 28 {
-            "stopping after current"
+            "q resume"
         } else {
-            "stop after current issue   waiting"
+            "stop after current issue   q resume"
         }
     } else if state.live {
         if state.can_dismiss() {
@@ -1329,7 +1334,7 @@ fn render_help(frame: &mut Frame, state: &BoardState, theme: Theme, area: Rect) 
         if state.can_dismiss() {
             "Never kills an agent."
         } else {
-            "Enter / q  dismiss when idle. Never kills an agent."
+            "Again cancels stop. Never kills an agent."
         }
     } else {
         "Offline sample. No GitHub. No agent."
@@ -1718,8 +1723,6 @@ mod tests {
         );
         assert!(state.stop_pending);
         assert_eq!(state.notice.as_deref(), Some("stop after current issue"));
-        let ctrl_c = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
-        assert_eq!(state.handle_key(ctrl_c), BoardCommand::Stop);
         assert_eq!(
             state.handle_key(key(KeyCode::Enter)),
             BoardCommand::Continue
@@ -1730,6 +1733,26 @@ mod tests {
             state.handle_key(key(KeyCode::Char('q'))),
             BoardCommand::Quit
         );
+    }
+
+    #[test]
+    fn live_second_q_cancels_pending_stop() {
+        let mut state = BoardState::live_run(42, "owner/repo".into(), "main".into());
+        state.phase = Phase::Running { issue: 10 };
+        assert_eq!(
+            state.handle_key(key(KeyCode::Char('q'))),
+            BoardCommand::Stop
+        );
+        assert_eq!(
+            state.handle_key(key(KeyCode::Char('q'))),
+            BoardCommand::Continue
+        );
+        assert!(!state.stop_pending);
+        assert_eq!(state.notice, None);
+        let ctrl_c = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
+        assert_eq!(state.handle_key(ctrl_c), BoardCommand::Stop);
+        assert_eq!(state.handle_key(ctrl_c), BoardCommand::Continue);
+        assert!(!state.stop_pending);
     }
 
     #[test]
@@ -1815,6 +1838,7 @@ mod tests {
         state.handle_key(key(KeyCode::Char('q')));
         let text = plain(&draw(&state, &Theme::native(), 80, 16));
         assert!(text.contains("stop after current issue"), "{text}");
+        assert!(text.contains("q resume"), "{text}");
     }
 
     #[test]

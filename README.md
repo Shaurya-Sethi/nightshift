@@ -2,6 +2,10 @@
 
 [![CI](https://img.shields.io/github/actions/workflow/status/Shaurya-Sethi/nightshift/ci.yml?branch=main&logo=github)](https://github.com/Shaurya-Sethi/nightshift/actions/workflows/ci.yml) [![crates.io](https://img.shields.io/crates/v/nightshift-cli)](https://crates.io/crates/nightshift-cli) [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE) [![Rust 2024](https://img.shields.io/badge/rust-2024-%23b7410e?logo=rust)](https://www.rust-lang.org)
 
+<p align="center">
+  <img src="assets/watch-board.png" alt="nightshift Watch Board: 6 issues completed, 1 running, 5 queued, 2h 47m into a run" width="800">
+</p>
+
 Go to sleep with a backlog and wake up with merged PRs.
 
 nightshift autonomously works through your GitHub issues while you are afk. Point it at a PRD (a Product Requirements Document, or spec, published as a GitHub issue), pick your [favourite coding agent](#supported-agents), and it handles the rest: branch, implement, PR, merge, repeat. It stops when every child issue is done. Inspired by the [Ralph Wiggum](https://ghuntley.com/loop/) loop pattern.

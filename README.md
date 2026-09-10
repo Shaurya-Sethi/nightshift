@@ -109,6 +109,14 @@ Details: [Terminal output](docs/terminal-output.md).
 
 After the agent exits, nightshift checks that the issue is actually closed on GitHub. If it is, the loop continues from step one. If not, nightshift stops and tells you; the agent may have exited cleanly but left the issue open, which usually means something needs your attention.
 
+### Resuming after a failure
+
+After fixing the reported problem, rerun the same command. Nightshift fetches the current open issues and blocker states again: closed work is skipped, an unfinished child is retried, and its dependents wait until it closes. An agent failure stops the whole run, including independent queued issues.
+
+A failed completion check does not necessarily mean the agent's work failed. If the agent closed the issue before the GitHub check failed, the next run skips that issue and continues with the remaining work. Check GitHub before undoing completed work.
+
+Keep the same `--issue` floor when retrying unfinished work; raising it past an open prerequisite does not unblock its dependents. Per-issue picker choices are run-ephemeral, so choose them again on restart.
+
 ## Skills
 
 nightshift ships three agent skills under [`skills/`](skills/). They make it easy to publish a PRD, create child issues with the right parent and blocked-by links, and get a nightshift command that matches how you want to run.

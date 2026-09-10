@@ -733,6 +733,7 @@ mod tests {
         closed: RefCell<HashSet<u32>>,
         fetch_body_calls: Cell<u32>,
         fetch_issues_calls: Cell<u32>,
+        fail_verification_once: Cell<Option<u32>>,
     }
 
     impl GithubIssues for MockGithub {
@@ -752,6 +753,21 @@ mod tests {
                         .get("number")
                         .and_then(|number| number.as_u64())
                         .is_some_and(|number| !closed.contains(&(number as u32)))
+                })
+                .map(|mut issue| {
+                    for blocker in issue["blockedBy"]["nodes"]
+                        .as_array_mut()
+                        .into_iter()
+                        .flatten()
+                    {
+                        if blocker["number"]
+                            .as_u64()
+                            .is_some_and(|number| closed.contains(&(number as u32)))
+                        {
+                            blocker["state"] = json!("CLOSED");
+                        }
+                    }
+                    issue
                 })
                 .collect();
             Ok(serde_json::Value::Array(open).to_string())
@@ -774,6 +790,10 @@ mod tests {
             _repo: &str,
             issue_number: u32,
         ) -> Result<bool, Box<dyn std::error::Error>> {
+            if self.fail_verification_once.get() == Some(issue_number) {
+                self.fail_verification_once.set(None);
+                return Err("temporary GitHub completion-check failure".into());
+            }
             Ok(self.closed.borrow().contains(&issue_number))
         }
     }
@@ -785,6 +805,7 @@ mod tests {
             closed: RefCell::new(HashSet::new()),
             fetch_body_calls: Cell::new(0),
             fetch_issues_calls: Cell::new(0),
+            fail_verification_once: Cell::new(None),
         }
     }
 
@@ -794,6 +815,7 @@ mod tests {
         prompts: RefCell<Vec<String>>,
         closed: &'a RefCell<HashSet<u32>>,
         next_close: Cell<u32>,
+        fail_once_on: Cell<Option<u32>>,
     }
 
     impl AgentRunner for RecordingCloser<'_> {
@@ -808,6 +830,10 @@ mod tests {
                 .push(profile.model.map(str::to_string));
             self.prompts.borrow_mut().push(prompt.to_string());
             let number = self.next_close.get();
+            if self.fail_once_on.get() == Some(number) {
+                self.fail_once_on.set(None);
+                return Err("agent failed before closing the issue".into());
+            }
             self.closed.borrow_mut().insert(number);
             self.next_close.set(number + 1);
             Ok(())
@@ -821,6 +847,7 @@ mod tests {
             prompts: RefCell::new(Vec::new()),
             closed,
             next_close: Cell::new(10),
+            fail_once_on: Cell::new(None),
         }
     }
 
@@ -1597,6 +1624,106 @@ mod tests {
 
     fn events_contain(watch: &crate::tui::WatchLog, check: impl Fn(&WatchEvent) -> bool) -> bool {
         watch.events().iter().any(check)
+    }
+
+    fn recovery_github() -> MockGithub {
+        mock_github(
+            graph(&[
+                child(12, 42, &[(11, "OPEN")]),
+                child(13, 42, &[]),
+                child(11, 42, &[(10, "OPEN")]),
+                child(10, 42, &[]),
+            ]),
+            HashMap::from([(42, "Product requirements".into())]),
+        )
+    }
+
+    fn dispatched_issues(watch: &crate::tui::WatchLog) -> Vec<u32> {
+        watch
+            .events()
+            .iter()
+            .filter_map(|event| match event {
+                WatchEvent::Dispatch { issue } => Some(*issue),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn failed_dependency_stops_the_run_and_is_retried_before_its_dependents() {
+        let github = recovery_github();
+        let agent = recording_closer(&github.closed);
+        agent.fail_once_on.set(Some(11));
+        let config = || {
+            tui_config(
+                false,
+                defaults(Agent::Pi, None, None),
+                RunEphemeralProfileMap::new(),
+                PreflightDimensions::default(),
+                DirectivePolicy::Replace("test directives"),
+            )
+        };
+        let failed_run = crate::tui::WatchLog::new();
+
+        let error = run_watched(config(), runtime(&github, &agent), &failed_run).unwrap_err();
+
+        assert!(error.to_string().contains("agent failed"));
+        assert_eq!(dispatched_issues(&failed_run), vec![10, 11]);
+        assert_eq!(*github.closed.borrow(), HashSet::from([10]));
+        assert!(events_contain(&failed_run, |event| {
+            matches!(event, WatchEvent::Failed { issue: 11, .. })
+        }));
+        assert!(!events_contain(&failed_run, |event| {
+            matches!(event, WatchEvent::Completed { issue: 11 })
+        }));
+
+        let resumed_run = crate::tui::WatchLog::new();
+        run_watched(config(), runtime(&github, &agent), &resumed_run).unwrap();
+
+        assert_eq!(dispatched_issues(&resumed_run), vec![11, 12, 13]);
+        assert_eq!(agent.prompts.borrow().len(), 5);
+        assert_eq!(*github.closed.borrow(), HashSet::from([10, 11, 12, 13]));
+        assert!(events_contain(&resumed_run, |event| matches!(
+            event,
+            WatchEvent::Done
+        )));
+    }
+
+    #[test]
+    fn retry_after_a_completion_check_failure_skips_work_already_closed_on_github() {
+        let github = recovery_github();
+        github.fail_verification_once.set(Some(11));
+        let agent = recording_closer(&github.closed);
+        let config = || {
+            tui_config(
+                false,
+                defaults(Agent::Pi, None, None),
+                RunEphemeralProfileMap::new(),
+                PreflightDimensions::default(),
+                DirectivePolicy::Replace("test directives"),
+            )
+        };
+        let failed_run = crate::tui::WatchLog::new();
+
+        let error = run_watched(config(), runtime(&github, &agent), &failed_run).unwrap_err();
+
+        assert!(error.to_string().contains("completion-check failure"));
+        assert_eq!(dispatched_issues(&failed_run), vec![10, 11]);
+        assert_eq!(*github.closed.borrow(), HashSet::from([10, 11]));
+        assert!(!events_contain(&failed_run, |event| {
+            matches!(event, WatchEvent::Completed { issue: 11 })
+        }));
+
+        let resumed_run = crate::tui::WatchLog::new();
+        run_watched(config(), runtime(&github, &agent), &resumed_run).unwrap();
+
+        assert_eq!(dispatched_issues(&resumed_run), vec![12, 13]);
+        assert_eq!(agent.prompts.borrow().len(), 4);
+        assert_eq!(*github.closed.borrow(), HashSet::from([10, 11, 12, 13]));
+        assert!(events_contain(&resumed_run, |event| matches!(
+            event,
+            WatchEvent::Done
+        )));
     }
 
     struct StoppingGit<'a> {

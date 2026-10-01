@@ -6,9 +6,10 @@
 //! for `--write-recipe`.
 
 use std::collections::HashSet;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::agent::Agent;
 use crate::github::GithubIssue;
@@ -29,6 +30,14 @@ fn default_base_branch() -> String {
     "main".to_string()
 }
 
+fn deserialize_issue<'de, D: Deserializer<'de>>(deserializer: D) -> Result<u32, D::Error> {
+    Ok(Option::<u32>::deserialize(deserializer)?.unwrap_or(0))
+}
+
+fn deserialize_base_branch<'de, D: Deserializer<'de>>(deserializer: D) -> Result<String, D::Error> {
+    Ok(Option::<String>::deserialize(deserializer)?.unwrap_or_else(default_base_branch))
+}
+
 /// Default `--write-recipe` destination for a PRD: `prd-<prd>-recipe.yaml` in cwd.
 pub fn default_write_path(prd: u32) -> PathBuf {
     PathBuf::from(format!("prd-{prd}-recipe.yaml"))
@@ -42,9 +51,17 @@ pub struct Recipe {
     agent: Agent,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     repo: Option<String>,
-    #[serde(default, skip_serializing_if = "is_zero")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_issue",
+        skip_serializing_if = "is_zero"
+    )]
     issue: u32,
-    #[serde(default = "default_base_branch", skip_serializing_if = "is_main")]
+    #[serde(
+        default = "default_base_branch",
+        deserialize_with = "deserialize_base_branch",
+        skip_serializing_if = "is_main"
+    )]
     base_branch: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     model: Option<String>,
@@ -180,25 +197,31 @@ impl Recipe {
     ///
     /// Returns an error when the destination cannot be written.
     pub fn write_to(&self, path: &Path) -> Result<(), String> {
-        if path.exists() {
-            if path.is_dir() {
-                return Err(format!(
-                    "nightshift: --write-recipe path {} is a directory; pass a file path",
-                    path.display()
-                ));
-            }
+        if path.is_dir() {
             return Err(format!(
-                "nightshift: --write-recipe path {} already exists",
+                "nightshift: --write-recipe path {} is a directory; pass a file path",
                 path.display()
             ));
         }
         let yaml = self.to_yaml()?;
-        std::fs::write(path, yaml).map_err(|error| {
-            format!(
-                "nightshift: failed to write recipe {}: {error}",
-                path.display()
-            )
-        })
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(path)
+            .and_then(|mut file| file.write_all(yaml.as_bytes()))
+            .map_err(|error| {
+                if error.kind() == std::io::ErrorKind::AlreadyExists {
+                    format!(
+                        "nightshift: --write-recipe path {} already exists",
+                        path.display()
+                    )
+                } else {
+                    format!(
+                        "nightshift: failed to write recipe {}: {error}",
+                        path.display()
+                    )
+                }
+            })
     }
 
     /// Loads prompt files, builds per-issue overrides, and capability-checks
@@ -220,7 +243,10 @@ impl Recipe {
                 (None, None) => None,
                 (Some(path), Some(mode)) => Some(PerIssuePrompt {
                     mode,
-                    contents: load_directives(path)?,
+                    contents: load_directives(path).map_err(|error| {
+                        let detail = error.strip_prefix("nightshift: ").unwrap_or(&error);
+                        format!("nightshift: recipe issue #{}: {detail}", row.number)
+                    })?,
                 }),
                 _ => unreachable!("validate_schema rejects unpaired prompt fields"),
             };
@@ -241,7 +267,11 @@ impl Recipe {
         };
         defaults
             .agent
-            .get_command_with_profile(resolve(defaults, None))?;
+            .get_command_with_profile(resolve(defaults, None))
+            .map_err(|error| {
+                let detail = error.strip_prefix("nightshift: ").unwrap_or(&error);
+                format!("nightshift: recipe: {detail}")
+            })?;
         for row in &self.issues {
             let profile = resolve(defaults, overrides.get(&row.number));
             profile
@@ -377,6 +407,28 @@ pub fn unknown_recipe_issue(number: u32) -> String {
     format!("nightshift: issue #{number} is not in the recipe; aborting")
 }
 
+/// Rejects planned issues that are missing from a locked recipe map.
+///
+/// Closed recipe rows may drop out of the live plan. A new planned number that
+/// is not in the map is an error.
+///
+/// # Errors
+///
+/// Returns [`unknown_recipe_issue`] for the first planned number absent from
+/// `profiles`.
+pub fn assert_no_unknown_recipe_issues(
+    profiles: &RunEphemeralProfileMap,
+    planned: &[GithubIssue],
+) -> Result<(), String> {
+    match planned
+        .iter()
+        .find(|issue| !profiles.contains_key(&issue.number))
+    {
+        Some(issue) => Err(unknown_recipe_issue(issue.number)),
+        None => Ok(()),
+    }
+}
+
 fn format_issue_list(numbers: &[u32]) -> String {
     numbers
         .iter()
@@ -420,8 +472,12 @@ fn generate_prompt_pair(
     match (path, mode) {
         (None, None) => Ok((None, None)),
         (Some(path), Some(mode)) => {
-            let absolute = std::fs::canonicalize(path).map_err(|_| {
-                format!("nightshift: failed to read prompt file: {}", path.display())
+            load_directives(path)?;
+            let absolute = std::path::absolute(path).map_err(|error| {
+                format!(
+                    "nightshift: failed to resolve prompt file {}: {error}",
+                    path.display()
+                )
             })?;
             Ok((Some(absolute), Some(mode)))
         }
@@ -497,6 +553,13 @@ issues: []
         let error =
             Recipe::from_yaml("agent: claude\nissues: []\n").expect_err("missing prd must fail");
         assert!(error.contains("invalid recipe"), "{error}");
+
+        let error = Recipe::from_yaml("prd: 1\nissues: []\n").expect_err("missing agent must fail");
+        assert!(error.contains("invalid recipe"), "{error}");
+
+        let error =
+            Recipe::from_yaml("prd: 1\nagent: claude\n").expect_err("missing issues must fail");
+        assert!(error.contains("invalid recipe"), "{error}");
     }
 
     #[test]
@@ -545,18 +608,31 @@ issues:
         assert!(recipe.reasoning_effort.is_none());
         assert!(recipe.issues[0].model.is_none());
         assert!(recipe.issues[0].reasoning_effort.is_none());
+        assert_eq!(recipe.issue, 0);
+        assert_eq!(recipe.base_branch, "main");
+    }
+
+    #[test]
+    fn from_yaml_treats_null_issue_and_base_branch_like_omit() {
+        let recipe = Recipe::from_yaml(
+            r#"
+prd: 12
+agent: claude
+issue: null
+base_branch: null
+issues: []
+"#,
+        )
+        .expect("null issue and base_branch should parse as omit");
+        assert_eq!(recipe.issue, 0);
+        assert_eq!(recipe.base_branch, "main");
     }
 
     #[test]
     fn from_yaml_rejects_prompt_file_without_mode() {
         let path = missing_abs();
         let error = Recipe::from_yaml(&format!(
-            r#"
-prd: 12
-agent: claude
-prompt_file: {path}
-issues: []
-"#
+            "prd: 12\nagent: claude\nprompt_file: '{path}'\nissues: []\n"
         ))
         .expect_err("prompt_file requires prompt_mode");
         assert!(
@@ -598,6 +674,21 @@ issues: []
     }
 
     #[test]
+    fn from_yaml_rejects_tilde_prompt_path() {
+        let error = Recipe::from_yaml(
+            r#"
+prd: 12
+agent: claude
+prompt_file: ~/directives.md
+prompt_mode: replace
+issues: []
+"#,
+        )
+        .expect_err("tilde is not absolute");
+        assert!(error.contains("must be absolute"), "{error}");
+    }
+
+    #[test]
     fn from_yaml_rejects_duplicate_issue_numbers() {
         let error = Recipe::from_yaml(
             r#"
@@ -635,13 +726,7 @@ issues:
     fn prepare_fails_when_prompt_file_missing() {
         let path = missing_abs();
         let recipe = Recipe::from_yaml(&format!(
-            r#"
-prd: 12
-agent: claude
-prompt_file: {path}
-prompt_mode: replace
-issues: []
-"#
+            "prd: 12\nagent: claude\nprompt_file: '{path}'\nprompt_mode: replace\nissues: []\n"
         ))
         .expect("absolute missing path is schema-valid");
         let error = recipe
@@ -781,6 +866,43 @@ issues:
     }
 
     #[test]
+    fn from_planned_stamps_absolute_prompt_file_and_mode() {
+        let dir = std::env::temp_dir().join(format!(
+            "nightshift-recipe-gen-prompt-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let prompt = dir.join("directives.md");
+        std::fs::write(&prompt, "extra\n").expect("prompt file");
+        let planned = [issue(1, "One")];
+        let recipe = Recipe::from_planned(GenerateSpec {
+            prd: 12,
+            repo: "o/r",
+            agent: Agent::Claude,
+            issue: 0,
+            base_branch: "main",
+            model: None,
+            reasoning_effort: None,
+            prompt_file: Some(prompt.as_path()),
+            prompt_mode: Some(PromptMode::Replace),
+            planned: &planned,
+        })
+        .expect("generate with prompt file");
+        let yaml = recipe.to_yaml().expect("encode");
+        assert!(yaml.contains("prompt_mode: replace"), "{yaml}");
+        assert!(
+            recipe
+                .prompt_file
+                .as_ref()
+                .is_some_and(|path| path.is_absolute()),
+            "{yaml}"
+        );
+        assert!(!yaml.contains(r"\\?\"), "{yaml}");
+        let _ = std::fs::remove_file(&prompt);
+        let _ = std::fs::remove_dir(&dir);
+    }
+
+    #[test]
     fn write_to_fails_when_path_exists() {
         let planned = [issue(1, "One")];
         let recipe = Recipe::from_planned(GenerateSpec {
@@ -860,7 +982,7 @@ issues:
         let prompt = dir.join("directives.md");
         std::fs::write(&prompt, "  extra instructions  \n").expect("prompt file");
         let yaml = format!(
-            "prd: 12\nagent: claude\nprompt_file: {}\nprompt_mode: append\nissues:\n  - number: 42\n    agent: claude\n",
+            "prd: 12\nagent: claude\nprompt_file: '{}'\nprompt_mode: append\nissues:\n  - number: 42\n    agent: claude\n",
             prompt.display()
         );
         let prepared = Recipe::from_yaml(&yaml)

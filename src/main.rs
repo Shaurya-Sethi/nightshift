@@ -47,6 +47,11 @@ fn main() -> ExitCode {
         Err(e) => die(e),
     };
 
+    if let Some(dest) = args.write_recipe_path() {
+        write_recipe(&args, &github, &repo, &dest);
+        return ExitCode::SUCCESS;
+    }
+
     let git = match GitCliAdapter::for_repo(&repo) {
         Ok(git) => {
             if args.tui {
@@ -64,11 +69,6 @@ fn main() -> ExitCode {
             args.base_branch,
             git.workdir().display()
         ));
-    }
-
-    if let Some(dest) = args.write_recipe_path() {
-        write_recipe(&args, &github, &repo, &dest);
-        return ExitCode::SUCCESS;
     }
 
     let loaded = args

@@ -15,7 +15,7 @@ nightshift --prd 12 --agent claude --pick-agents --pick-models
 
 ## Recipes
 
-`--write-recipe` stamps the planned set into YAML and exits without starting a run. Default path: `prd-<prd>-recipe.yaml` in the current directory. The file is a valid recipe: whole-run `--agent` plus one row per planned issue. Edit rows to vary agent, model, effort, or prompt. `--write-recipe` fails if the path exists.
+`--write-recipe` requires `--prd` and `--agent`. It stamps the planned set into YAML and exits without starting a run. Default path: `prd-<prd>-recipe.yaml` in the current directory. PATH, when given, must be a file, not a directory. Exclusive with `--recipe`, `--tui`, and `--pick-*`. Empty planned set writes nothing. Stdout is the written path. The file is a valid recipe: whole-run `--agent` plus one row per planned issue. Edit rows to vary agent, model, effort, or prompt. `--write-recipe` fails if the path exists.
 
 ```bash
 nightshift --prd 12 --agent claude --write-recipe
@@ -30,7 +30,7 @@ agent: claude
 model: claude-opus-5
 issues:
   - number: 42
-    title: Add login
+    title: Add login   # documentary; ignored at runtime
     agent: claude
     model: claude-opus-5
   - number: 43

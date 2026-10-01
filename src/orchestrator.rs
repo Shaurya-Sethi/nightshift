@@ -242,6 +242,15 @@ fn run_loop(
             Ok(plan) => plan,
             Err(e) => return fail(watch, config.prd, e.to_string()),
         };
+        if let Err(message) = reject_unknown_recipe_issues(&config, &plan.planned) {
+            let number = plan
+                .planned
+                .iter()
+                .find(|issue| !config.per_issue_profiles.contains_key(&issue.number))
+                .map(|issue| issue.number)
+                .unwrap_or(config.prd);
+            return fail(watch, number, message);
+        }
         emit_roster(watch, &plan, &config);
         if watch.stop_requested() {
             watch.emit(WatchEvent::Done);
@@ -262,18 +271,6 @@ fn run_loop(
             watch.emit(WatchEvent::Done);
             break;
         };
-
-        if config.recipe_lock
-            && !config
-                .per_issue_profiles
-                .contains_key(&selected_issue.number)
-        {
-            return fail(
-                watch,
-                selected_issue.number,
-                crate::recipe::unknown_recipe_issue(selected_issue.number),
-            );
-        }
 
         if watch.stop_requested() {
             watch.emit(WatchEvent::Done);
@@ -597,6 +594,15 @@ fn run_dry_run(
         Ok(plan) => plan,
         Err(e) => return fail(watch, config.prd, e.to_string()),
     };
+    if let Err(message) = reject_unknown_recipe_issues(&config, &plan.planned) {
+        let number = plan
+            .planned
+            .iter()
+            .find(|issue| !config.per_issue_profiles.contains_key(&issue.number))
+            .map(|issue| issue.number)
+            .unwrap_or(config.prd);
+        return fail(watch, number, message);
+    }
     emit_roster(watch, &plan, &config);
 
     if plan.planned.is_empty() && plan.blocked.is_empty() {
@@ -654,6 +660,16 @@ fn run_dry_run(
         agent_cmd,
         prompt,
     }))
+}
+
+fn reject_unknown_recipe_issues(
+    config: &WorkflowConfig<'_>,
+    planned: &[GithubIssue],
+) -> Result<(), String> {
+    if !config.recipe_lock {
+        return Ok(());
+    }
+    crate::recipe::assert_no_unknown_recipe_issues(&config.per_issue_profiles, planned)
 }
 
 fn complete_without_candidates(prd: u32, min_issue: u32, has_open_children: bool, tui: bool) {
@@ -2141,6 +2157,7 @@ mod tests {
     struct LateIssueGithub {
         base: MockGithub,
         extra: serde_json::Value,
+        inject_after: u32,
     }
 
     impl GithubIssues for LateIssueGithub {
@@ -2150,7 +2167,7 @@ mod tests {
 
         fn fetch_issues(&self, repo: &str) -> Result<String, Box<dyn std::error::Error>> {
             let json = self.base.fetch_issues(repo)?;
-            if self.base.fetch_issues_calls.get() <= 1 {
+            if self.base.fetch_issues_calls.get() <= self.inject_after {
                 return Ok(json);
             }
             let mut issues: Vec<serde_json::Value> = serde_json::from_str(&json)?;
@@ -2180,6 +2197,7 @@ mod tests {
         let github = LateIssueGithub {
             base: prd_github(),
             extra: child(99, 42, &[]),
+            inject_after: 2,
         };
         let agent = recording_closer(&github.base.closed);
         let error = run(
@@ -2189,6 +2207,35 @@ mod tests {
         .expect_err("new planned issue must abort")
         .to_string();
         assert!(error.contains("issue #99 is not in the recipe"), "{error}");
-        assert_eq!(*agent.agents.borrow(), vec![Agent::Pi, Agent::Pi]);
+        assert_eq!(*agent.agents.borrow(), vec![Agent::Pi]);
+    }
+
+    #[test]
+    fn recipe_lock_dry_run_fails_when_plan_gains_an_issue() {
+        let github = LateIssueGithub {
+            base: prd_github(),
+            extra: child(99, 42, &[]),
+            inject_after: 1,
+        };
+        let agent = idle_agent();
+        let mut config = recipe_config(recipe_profiles(&[10, 11]));
+        config.dry_run = true;
+        let error = run(config, runtime(&github, &agent))
+            .expect_err("dry-run must not preview unknown issues")
+            .to_string();
+        assert!(error.contains("issue #99 is not in the recipe"), "{error}");
+        assert!(!agent.ran.get());
+    }
+
+    #[test]
+    fn recipe_lock_allows_empty_plan_and_empty_recipe() {
+        let github = mock_github("[]", HashMap::from([(42, "Product requirements".into())]));
+        let agent = idle_agent();
+        run(
+            recipe_config(RunEphemeralProfileMap::new()),
+            runtime(&github, &agent),
+        )
+        .expect("empty recipe and empty plan match");
+        assert!(!agent.ran.get());
     }
 }

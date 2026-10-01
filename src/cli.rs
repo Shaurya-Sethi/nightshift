@@ -512,6 +512,24 @@ mod tests {
             ])
             .is_err()
         );
+        for extra in [
+            ["--agent", "pi"].as_slice(),
+            ["--repo", "o/r"].as_slice(),
+            ["--model", "m"].as_slice(),
+            ["--reasoning-effort", "high"].as_slice(),
+            ["--prompt-file", "p.md"].as_slice(),
+            ["--append-prompt-file", "p.md"].as_slice(),
+            ["--pick-efforts"].as_slice(),
+            ["--pick-models"].as_slice(),
+            ["--pick-prompts"].as_slice(),
+        ] {
+            let mut argv = vec!["nightshift", "--recipe", "run.yaml"];
+            argv.extend(extra.iter().copied());
+            assert!(
+                Args::try_parse_from(&argv).is_err(),
+                "expected conflict for {extra:?}"
+            );
+        }
     }
 
     #[test]

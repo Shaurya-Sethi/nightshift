@@ -39,13 +39,15 @@ cargo install --git https://github.com/Shaurya-Sethi/nightshift
 ```bash
 nightshift --prd 12 --agent claude --model claude-opus-5
 nightshift --prd 12 --agent claude --tui
+nightshift --prd 12 --agent claude --write-recipe
+nightshift --recipe prd-12-recipe.yaml
 ```
 
 
 | Flag                  | Required | Default                   | Description                                                                                          |
 | --------------------- | -------- | ------------------------- | ---------------------------------------------------------------------------------------------------- |
-| `--prd`               | yes      | n/a                       | The PRD issue number to work through                                                                 |
-| `--agent`             | yes      | n/a                       | Whole-run default agent: `claude`, `codex`, `antigravity`, `cursor`, `pi`, `opencode`, `copilot`. `--pick-agents` may override per issue. |
+| `--prd`               | yes*     | n/a                       | The PRD issue number to work through. Required unless `--recipe`.                                    |
+| `--agent`             | yes*     | n/a                       | Whole-run default agent: `claude`, `codex`, `antigravity`, `cursor`, `pi`, `opencode`, `copilot`. `--pick-agents` may override per issue. Required unless `--recipe`. |
 | `--model`             |          | agent's persisted default | Whole-run model for agents that support non-interactive model selection                              |
 | `--reasoning-effort`  |          | agent's persisted default | Whole-run agent-native effort. Cursor uses a model slug instead.                                     |
 | `--pick-agents`       |          | `false`                   | TTY-only: pick an agent per planned issue. May combine with either other pick flag.                  |
@@ -58,17 +60,21 @@ nightshift --prd 12 --agent claude --tui
 | `--prompt-file`       |          | built-in guidelines       | File that overrides built-in directives for every issue unless a `--pick-prompts` row supplies a file |
 | `--append-prompt-file`|          | n/a                       | File appended to the resolved agent's built-in directives for every issue unless a `--pick-prompts` row supplies a file. Mutually exclusive with `--prompt-file`. |
 | `--dry-run`           |          | `false`                   | Show planned order and first prompt without starting an agent; requested preflight still runs        |
-| `--tui`               |          | `false`                   | Opt-in Watch Board. Requires stdin and stdout TTY; fails before GitHub or git work. While work is active, `q` / Ctrl-C stop after the current issue without killing the agent. Idle `q` / Ctrl-C / Enter dismisses. |
+| `--tui`               |          | `false`                   | Opt-in Watch Board. Requires stdin and stdout TTY; fails before GitHub or git work. While work is active, `q` / Ctrl-C stop after the current issue without killing the agent. Idle `q` / Ctrl-C / Enter dismisses. Exclusive with `--recipe` and `--write-recipe`. |
+| `--recipe`            |          | n/a                       | Start from a user-owned YAML run recipe. Exclusive with other run flags except `--dry-run`.          |
+| `--write-recipe`      |          | `prd-<prd>-recipe.yaml`   | Write a valid recipe for the planned set and exit. Requires `--prd` and `--agent`. PATH is a file (not a directory). Exclusive with `--recipe`, `--tui`, and `--pick-*`. Empty planned set writes nothing. Stdout is the written path. Fails if the path exists. |
 
 ### Invocation profiles
 
 An **invocation profile** is the agent, model, and reasoning effort used for one issue.
 
-`--agent` is required and is the default for the whole run. Optional `--model` and `--reasoning-effort` apply to every issue unless a picker overrides them.
+`--agent` is required on argv runs and is the whole-run default. Optional `--model` and `--reasoning-effort` apply to every issue unless a picker or recipe row overrides them. `--recipe` supplies `agent` from the YAML instead.
 
-To choose per issue, add any of `--pick-agents`, `--pick-efforts`, `--pick-models`, or `--pick-prompts` (TTY only). `--pick-efforts` and `--pick-models` cannot be combined; the other pick flags stack with either. Enter keeps a default. `q` or Ctrl-C cancels the whole picker; a partial selection never starts a run.
+To choose per issue interactively, add any of `--pick-agents`, `--pick-efforts`, `--pick-models`, or `--pick-prompts` (TTY only). `--pick-efforts` and `--pick-models` cannot be combined; the other pick flags stack with either. Enter keeps a default. `q` or Ctrl-C cancels the whole picker; a partial selection never starts a run. Pick flags cannot be combined with `--recipe` or `--write-recipe`.
 
-Picker order, inheritance, dry-run, and agent-specific knobs: [Invocation profiles](docs/invocation-profiles.md).
+`--write-recipe` is an argv command (`--prd` + `--agent`). It stamps the planned set into YAML and exits. The generated file is already a valid recipe. Edit rows to vary agent, model, effort, or prompt, then `nightshift --recipe PATH`. Recipe issue numbers must match the live planned set or the run fails before the loop. Paths inside the YAML are absolute. `--recipe --dry-run` validates without spawning.
+
+Picker order, inheritance, recipes, dry-run, and agent-specific knobs: [Invocation profiles](docs/invocation-profiles.md).
 
 ## Supported Agents
 
@@ -117,9 +123,9 @@ nightshift ships three agent skills under [`skills/`](skills/). They make it eas
 | ----- | ----------- |
 | `to-nightshift-prd` | Turn the current conversation into a PRD and publish it as a GitHub issue. |
 | `to-nightshift-issues` | Break a PRD into tracer-bullet sub-issues with `--parent`, `--blocked-by`, and `ready-for-agent` (or `ready-for-human`). Creates the labels if missing. |
-| `recommend-nightshift-profiles` | Recommend invocation profiles for a PRD's planned order and emit a copy-ready `nightshift` command (advice only). |
+| `to-nightshift-recipe` | Interview `--agent`, write a YAML recipe, and print `nightshift --recipe PATH`. |
 
-Flow: plan with an agent (or otherwise) → `to-nightshift-prd` → `to-nightshift-issues` → `recommend-nightshift-profiles` (optional) → `nightshift --dry-run` → `nightshift`. The first two skills need an authenticated `gh`.
+Flow: plan with an agent (or otherwise) → `to-nightshift-prd` → `to-nightshift-issues` → `to-nightshift-recipe` (optional) → `nightshift --recipe PATH --dry-run` → `nightshift --recipe PATH`. The first two skills need an authenticated `gh`.
 
 ### Installing
 

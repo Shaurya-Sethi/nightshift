@@ -6,6 +6,7 @@
 //! a real process in production and a fake runner in tests.
 
 use clap::ValueEnum;
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::io::Write;
 use std::process::{Command, ExitStatus, Stdio};
 
@@ -236,6 +237,19 @@ impl Agent {
             Self::OpenCode => "opencode",
             Self::Copilot => "copilot",
         }
+    }
+}
+
+impl Serialize for Agent {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.name())
+    }
+}
+
+impl<'de> Deserialize<'de> for Agent {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = String::deserialize(deserializer)?;
+        ValueEnum::from_str(&value, false).map_err(serde::de::Error::custom)
     }
 }
 

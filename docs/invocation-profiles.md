@@ -1,8 +1,8 @@
 # Invocation profiles
 
-An **invocation profile** is the agent, model, and reasoning effort used for one issue. `--agent` is always required as the whole-run default. Picker flags are optional and run once, in memory, before the loop starts.
+An **invocation profile** is the agent, model, and reasoning effort used for one issue. `--agent` is always required as the whole-run default unless you start from a `--recipe`. Picker flags are optional and run once, in memory, before the loop starts.
 
-Selections are never written to issues or the repository.
+Selections are never written to issues or the repository. `--write-recipe` writes a user-owned YAML file at a path you choose; nightshift does not commit it.
 
 ## Whole-run defaults
 
@@ -12,6 +12,38 @@ Pass `--agent` with optional `--model` and `--reasoning-effort`. Every issue use
 nightshift --prd 12 --agent claude --model claude-opus-5
 nightshift --prd 12 --agent claude --pick-agents --pick-models
 ```
+
+## Recipes
+
+`--write-recipe` requires `--prd` and `--agent`. It stamps the planned set into YAML and exits without starting a run. Default path: `prd-<prd>-recipe.yaml` in the current directory. PATH, when given, must be a file, not a directory. Exclusive with `--recipe`, `--tui`, and `--pick-*`. Empty planned set writes nothing. Stdout is the written path. The file is a valid recipe: whole-run `--agent` plus one row per planned issue. Edit rows to vary agent, model, effort, or prompt. `--write-recipe` fails if the path exists.
+
+```bash
+nightshift --prd 12 --agent claude --write-recipe
+nightshift --recipe prd-12-recipe.yaml
+nightshift --recipe prd-12-recipe.yaml --dry-run
+```
+
+```yaml
+prd: 12
+repo: owner/name
+agent: claude
+model: claude-opus-5
+issues:
+  - number: 42
+    title: Add login   # documentary; ignored at runtime
+    agent: claude
+    model: claude-opus-5
+  - number: 43
+    title: Add logout
+    agent: cursor
+    model: gpt-5.2
+```
+
+`--recipe PATH` is exclusive with other run flags except `--dry-run`. It is exclusive with `--tui` and all `--pick-*` flags. Paths inside the YAML (`prompt_file`) must be absolute. `prompt_file` requires `prompt_mode` (`append` or `replace`) at both layers.
+
+At startup, recipe issue numbers must equal the live planned set. YAML order is for humans; GitHub still picks the next ready child. A live issue number that is not in the recipe aborts. Unknown YAML keys, unpaired prompt fields, missing prompt files, and illegal agent/model/effort combinations fail before the loop.
+
+`--recipe` and `--write-recipe` cannot be combined.
 
 ## Per-issue pickers
 

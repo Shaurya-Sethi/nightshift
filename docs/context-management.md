@@ -97,6 +97,8 @@ TTY-only. For each planned child, type an optional path and choose append or rep
 | any | path + append | agent built-ins + blank line + that file (run-wide ignored) |
 | any | path + replace | that file only (run-wide ignored) |
 
+A `--recipe` uses the same pairing as the picker: whole-run `prompt_file` + `prompt_mode`, and optional per-issue `prompt_file` + `prompt_mode`. A per-issue path ignores run-wide policy. Paths must be absolute. Files are snapshotted before the loop.
+
 ---
 
 ## Tips for Writing Custom Directives

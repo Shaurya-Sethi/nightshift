@@ -25,7 +25,8 @@ pub enum DirectivePolicy<'a> {
 }
 
 /// Whether a picked prompt file is appended to built-ins or used as a full replace.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum PromptMode {
     /// `default_directives_for(resolved_agent)` plus a blank line plus the file.
     Append,

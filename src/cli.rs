@@ -3,7 +3,8 @@
 //! The parsed arguments are translated into [`crate::orchestrator::WorkflowConfig`]
 //! by the binary entrypoint. They identify the PRD, optional issue floor,
 //! repository, Whole-Run Invocation Defaults, optional Preflight Dimensions,
-//! directive source, base branch, dry-run mode, and opt-in `--tui` Watch Board.
+//! directive source, base branch, dry-run mode, opt-in `--tui` Watch Board,
+//! and optional `--recipe` / `--write-recipe` YAML paths.
 
 use clap::Parser;
 use std::path::PathBuf;
@@ -14,6 +15,7 @@ use crate::invocation_profile::{
 };
 use crate::orchestrator::WorkflowConfig;
 use crate::prompt::DirectivePolicy;
+use crate::recipe::default_write_path;
 
 /// CLI arguments for one PRD child-issue loop.
 #[derive(Parser)]
@@ -26,8 +28,8 @@ use crate::prompt::DirectivePolicy;
 )]
 pub struct Args {
     /// PRD issue number whose body provides shared context for child issues.
-    #[arg(long)]
-    pub prd: u32,
+    #[arg(long, required_unless_present = "recipe")]
+    pub prd: Option<u32>,
     /// Lowest child issue number to consider, useful when resuming partway through a PRD.
     #[arg(long, default_value_t = 0)]
     pub issue: u32,
@@ -35,8 +37,8 @@ pub struct Args {
     #[arg(long)]
     pub repo: Option<String>,
     /// Whole-run default coding agent; --pick-agents rows may override it.
-    #[arg(long)]
-    pub agent: Agent,
+    #[arg(long, required_unless_present = "recipe")]
+    pub agent: Option<Agent>,
     /// Explicit model for the selected agent; omitted means use the agent's persisted default.
     #[arg(long)]
     pub model: Option<String>,
@@ -70,6 +72,44 @@ pub struct Args {
     /// Opt-in Watch Board. Requires stdin and stdout TTY and fails before GitHub or git work, including repo resolution. While work is active, q and Ctrl-C stop after the current issue without killing the agent. When idle, q, Ctrl-C, or Enter dismisses the board. Without this flag, cooked and non-TTY output stay unchanged.
     #[arg(long)]
     pub tui: bool,
+    /// User-owned YAML run recipe. Exclusive with run flags except --dry-run. Replaces TTY pickers.
+    #[arg(
+        long,
+        value_name = "PATH",
+        conflicts_with_all = [
+            "prd",
+            "agent",
+            "issue",
+            "repo",
+            "model",
+            "reasoning_effort",
+            "pick_agents",
+            "pick_efforts",
+            "pick_models",
+            "pick_prompts",
+            "prompt_file",
+            "append_prompt_file",
+            "base_branch",
+            "tui",
+            "write_recipe"
+        ]
+    )]
+    pub recipe: Option<PathBuf>,
+    /// Write a recipe YAML for the planned set and exit without starting a run. Default path is prd-<prd>-recipe.yaml in the current directory.
+    #[arg(
+        long,
+        value_name = "PATH",
+        num_args = 0..=1,
+        conflicts_with_all = [
+            "recipe",
+            "pick_agents",
+            "pick_efforts",
+            "pick_models",
+            "pick_prompts",
+            "tui"
+        ]
+    )]
+    pub write_recipe: Option<Option<PathBuf>>,
 }
 
 /// Rejects `--tui` unless both stdin and stdout are terminals.
@@ -98,14 +138,14 @@ impl Args {
         directive_policy: DirectivePolicy<'a>,
     ) -> WorkflowConfig<'a> {
         WorkflowConfig {
-            prd: self.prd,
+            prd: self.prd.expect("clap requires --prd unless --recipe"),
             issue: self.issue,
             repo,
             base_branch: &self.base_branch,
             dry_run: self.dry_run,
             tui: self.tui,
             whole_run_defaults: WholeRunInvocationDefaults {
-                agent: self.agent,
+                agent: self.agent.expect("clap requires --agent unless --recipe"),
                 model: self.model.as_deref(),
                 reasoning_effort: self.reasoning_effort.as_deref(),
             },
@@ -117,6 +157,20 @@ impl Args {
                 prompts: self.pick_prompts,
             },
             directive_policy,
+            recipe_lock: false,
+        }
+    }
+
+    /// Destination for `--write-recipe`. `None` when the flag was not passed.
+    ///
+    /// Flag with no value becomes `prd-<prd>-recipe.yaml`.
+    pub fn write_recipe_path(&self) -> Option<PathBuf> {
+        match &self.write_recipe {
+            None => None,
+            Some(None) => Some(default_write_path(
+                self.prd.expect("clap requires --prd unless --recipe"),
+            )),
+            Some(Some(path)) => Some(path.clone()),
         }
     }
 }
@@ -133,7 +187,7 @@ mod tests {
     fn opencode_agent_value_is_unhyphenated() {
         let args = Args::try_parse_from(["nightshift", "--prd", "1", "--agent", "opencode"])
             .expect("opencode is the clap value name");
-        assert_eq!(args.agent, Agent::OpenCode);
+        assert_eq!(args.agent, Some(Agent::OpenCode));
 
         assert!(
             Args::try_parse_from(["nightshift", "--prd", "1", "--agent", "open-code"]).is_err(),
@@ -414,5 +468,154 @@ mod tests {
             !help.contains("maintainer directives to append to each prompt"),
             "--prompt-file must not be described as append"
         );
+    }
+
+    #[test]
+    fn recipe_parses_without_prd_or_agent() {
+        let args = Args::try_parse_from(["nightshift", "--recipe", "run.yaml"])
+            .expect("--recipe should not require --prd or --agent");
+        assert_eq!(
+            args.recipe.as_deref(),
+            Some(std::path::Path::new("run.yaml"))
+        );
+        assert!(args.prd.is_none());
+        assert!(args.agent.is_none());
+        assert!(args.write_recipe_path().is_none());
+    }
+
+    #[test]
+    fn recipe_allows_dry_run() {
+        let args = Args::try_parse_from(["nightshift", "--recipe", "run.yaml", "--dry-run"])
+            .expect("--recipe --dry-run should parse");
+        assert!(args.dry_run);
+    }
+
+    #[test]
+    fn recipe_conflicts_with_prd_and_tui() {
+        assert!(
+            Args::try_parse_from(["nightshift", "--recipe", "run.yaml", "--prd", "1"]).is_err()
+        );
+        assert!(Args::try_parse_from(["nightshift", "--recipe", "run.yaml", "--tui"]).is_err());
+        assert!(
+            Args::try_parse_from(["nightshift", "--recipe", "run.yaml", "--pick-agents"]).is_err()
+        );
+        assert!(
+            Args::try_parse_from(["nightshift", "--recipe", "run.yaml", "--issue", "5"]).is_err()
+        );
+        assert!(
+            Args::try_parse_from([
+                "nightshift",
+                "--recipe",
+                "run.yaml",
+                "--base-branch",
+                "develop"
+            ])
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn write_recipe_requires_prd_and_agent() {
+        assert!(Args::try_parse_from(["nightshift", "--write-recipe"]).is_err());
+        let args = Args::try_parse_from([
+            "nightshift",
+            "--prd",
+            "12",
+            "--agent",
+            "claude",
+            "--write-recipe",
+        ])
+        .expect("--write-recipe with no path should parse");
+        assert_eq!(
+            args.write_recipe_path(),
+            Some(std::path::PathBuf::from("prd-12-recipe.yaml"))
+        );
+    }
+
+    #[test]
+    fn write_recipe_keeps_explicit_path() {
+        let args = Args::try_parse_from([
+            "nightshift",
+            "--prd",
+            "12",
+            "--agent",
+            "claude",
+            "--write-recipe",
+            "out.yaml",
+        ])
+        .expect("explicit write path");
+        assert_eq!(
+            args.write_recipe_path(),
+            Some(std::path::PathBuf::from("out.yaml"))
+        );
+    }
+
+    #[test]
+    fn write_recipe_conflicts_with_recipe_and_tui_and_pickers() {
+        assert!(
+            Args::try_parse_from([
+                "nightshift",
+                "--prd",
+                "1",
+                "--agent",
+                "pi",
+                "--write-recipe",
+                "--recipe",
+                "run.yaml"
+            ])
+            .is_err()
+        );
+        assert!(
+            Args::try_parse_from([
+                "nightshift",
+                "--prd",
+                "1",
+                "--agent",
+                "pi",
+                "--write-recipe",
+                "--tui"
+            ])
+            .is_err()
+        );
+        assert!(
+            Args::try_parse_from([
+                "nightshift",
+                "--prd",
+                "1",
+                "--agent",
+                "pi",
+                "--write-recipe",
+                "--pick-models"
+            ])
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn write_recipe_allows_dry_run() {
+        let args = Args::try_parse_from([
+            "nightshift",
+            "--prd",
+            "12",
+            "--agent",
+            "claude",
+            "--write-recipe",
+            "--dry-run",
+        ])
+        .expect("--write-recipe --dry-run should parse");
+        assert!(args.dry_run);
+        assert_eq!(
+            args.write_recipe_path(),
+            Some(std::path::PathBuf::from("prd-12-recipe.yaml"))
+        );
+    }
+
+    #[test]
+    fn help_explains_recipe_flags() {
+        let mut command = Args::command();
+        let help = command.render_long_help().to_string();
+        assert!(help.contains("User-owned YAML run recipe"));
+        assert!(help.contains("Exclusive with run flags except --dry-run"));
+        assert!(help.contains("prd-<prd>-recipe.yaml"));
     }
 }

@@ -42,6 +42,9 @@ pub struct WorkflowConfig<'a> {
     pub preflight_dimensions: PreflightDimensions,
     /// Run-wide maintainer-directive policy applied to each generated issue prompt unless a per-issue prompt override is present.
     pub directive_policy: DirectivePolicy<'a>,
+    /// When true, `per_issue_profiles` came from a recipe: planned-set keys must
+    /// match exactly at startup, and a live issue missing from the map aborts.
+    pub recipe_lock: bool,
 }
 
 /// Runtime adapters used by [`run`].
@@ -146,6 +149,13 @@ fn startup(
             config.dry_run,
             io,
         )?;
+    } else if config.recipe_lock {
+        let issues_json = runtime
+            .github
+            .fetch_issues(config.repo)
+            .map_err(|e| format!("nightshift: failed to fetch issues: {}. Exiting.", e))?;
+        let plan = plan_order(&issues_json, config.prd, config.issue)?;
+        crate::recipe::assert_recipe_lock(&config.per_issue_profiles, &plan.planned)?;
     }
 
     Ok(prd_body)
@@ -252,6 +262,18 @@ fn run_loop(
             watch.emit(WatchEvent::Done);
             break;
         };
+
+        if config.recipe_lock
+            && !config
+                .per_issue_profiles
+                .contains_key(&selected_issue.number)
+        {
+            return fail(
+                watch,
+                selected_issue.number,
+                crate::recipe::unknown_recipe_issue(selected_issue.number),
+            );
+        }
 
         if watch.stop_requested() {
             watch.emit(WatchEvent::Done);
@@ -393,8 +415,9 @@ fn roster_issue(issue: &GithubIssue, config: &WorkflowConfig<'_>) -> RosterIssue
 ///
 /// Returns an error when GitHub or git adapters fail, the PRD issue cannot be
 /// found, the whole-run profile or pick flags are illegal, preflight aborts,
-/// the agent command fails, or the selected issue remains open after a
-/// successful agent exit.
+/// a recipe's issue numbers do not match the planned set, a live issue is
+/// missing from a locked recipe, the agent command fails, or the selected
+/// issue remains open after a successful agent exit.
 ///
 /// # Examples
 ///
@@ -425,6 +448,7 @@ fn roster_issue(issue: &GithubIssue, config: &WorkflowConfig<'_>) -> RosterIssue
 ///     per_issue_profiles: RunEphemeralProfileMap::new(),
 ///     preflight_dimensions: PreflightDimensions::default(),
 ///     directive_policy: DirectivePolicy::Replace("Run tests before opening a PR."),
+///     recipe_lock: false,
 /// };
 /// let runtime = Runtime {
 ///     github: &github,
@@ -724,6 +748,7 @@ mod tests {
             per_issue_profiles,
             preflight_dimensions,
             directive_policy,
+            recipe_lock: false,
         }
     }
 
@@ -2041,5 +2066,129 @@ mod tests {
         assert!(events_contain(&watch, |event| {
             matches!(event, WatchEvent::Dispatch { issue: 10 })
         }));
+    }
+
+    fn recipe_profiles(numbers: &[u32]) -> RunEphemeralProfileMap {
+        numbers
+            .iter()
+            .map(|number| {
+                (
+                    *number,
+                    PerIssueInvocationOverride {
+                        agent: Some(Agent::Pi),
+                        ..PerIssueInvocationOverride::default()
+                    },
+                )
+            })
+            .collect()
+    }
+
+    fn recipe_config(profiles: RunEphemeralProfileMap) -> WorkflowConfig<'static> {
+        let mut config = workflow(
+            0,
+            false,
+            defaults(Agent::Pi, None, None),
+            profiles,
+            PreflightDimensions::default(),
+            DirectivePolicy::Replace("test directives"),
+        );
+        config.recipe_lock = true;
+        config
+    }
+
+    #[test]
+    fn recipe_lock_runs_when_planned_set_matches() {
+        let github = prd_github();
+        let agent = recording_closer(&github.closed);
+        run(
+            recipe_config(recipe_profiles(&[10, 11])),
+            runtime(&github, &agent),
+        )
+        .expect("matching recipe should run");
+        assert_eq!(*agent.agents.borrow(), vec![Agent::Pi, Agent::Pi]);
+    }
+
+    #[test]
+    fn recipe_lock_fails_before_agent_when_plan_has_extra_issue() {
+        let github = prd_github();
+        let agent = idle_agent();
+        let error = run(
+            recipe_config(recipe_profiles(&[10])),
+            runtime(&github, &agent),
+        )
+        .expect_err("missing recipe row must fail")
+        .to_string();
+        assert!(error.contains("#11"), "{error}");
+        assert!(error.contains("missing from recipe"), "{error}");
+        assert!(!agent.ran.get());
+    }
+
+    #[test]
+    fn recipe_lock_fails_before_agent_when_recipe_has_extra_issue() {
+        let github = prd_github();
+        let agent = idle_agent();
+        let error = run(
+            recipe_config(recipe_profiles(&[10, 11, 99])),
+            runtime(&github, &agent),
+        )
+        .expect_err("extra recipe row must fail")
+        .to_string();
+        assert!(error.contains("#99"), "{error}");
+        assert!(error.contains("not in the planned set"), "{error}");
+        assert!(!agent.ran.get());
+    }
+
+    struct LateIssueGithub {
+        base: MockGithub,
+        extra: serde_json::Value,
+    }
+
+    impl GithubIssues for LateIssueGithub {
+        fn resolve_repo(&self, repo: Option<&str>) -> Result<String, Box<dyn std::error::Error>> {
+            self.base.resolve_repo(repo)
+        }
+
+        fn fetch_issues(&self, repo: &str) -> Result<String, Box<dyn std::error::Error>> {
+            let json = self.base.fetch_issues(repo)?;
+            if self.base.fetch_issues_calls.get() <= 1 {
+                return Ok(json);
+            }
+            let mut issues: Vec<serde_json::Value> = serde_json::from_str(&json)?;
+            issues.push(self.extra.clone());
+            Ok(serde_json::Value::Array(issues).to_string())
+        }
+
+        fn fetch_issue_body(
+            &self,
+            repo: &str,
+            issue_number: u32,
+        ) -> Result<String, Box<dyn std::error::Error>> {
+            self.base.fetch_issue_body(repo, issue_number)
+        }
+
+        fn is_issue_closed(
+            &self,
+            repo: &str,
+            issue_number: u32,
+        ) -> Result<bool, Box<dyn std::error::Error>> {
+            self.base.is_issue_closed(repo, issue_number)
+        }
+    }
+
+    #[test]
+    fn recipe_lock_aborts_when_a_new_issue_appears_mid_run() {
+        let github = LateIssueGithub {
+            base: prd_github(),
+            extra: child(99, 42, &[]),
+        };
+        let agent = recording_closer(&github.base.closed);
+        let error = run(
+            recipe_config(recipe_profiles(&[10, 11])),
+            runtime(&github, &agent),
+        )
+        .expect_err("new planned issue must abort")
+        .to_string();
+        assert!(error.contains("issue #99 is not in the recipe"), "{error}");
+        assert_eq!(*agent.agents.borrow(), vec![Agent::Pi, Agent::Pi]);
     }
 }

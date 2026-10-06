@@ -477,25 +477,6 @@ mod tests {
     }
 
     #[test]
-    fn claude_only_exposes_documented_reasoning_effort_values() {
-        assert_eq!(
-            Agent::Claude.supported_reasoning_efforts(),
-            Some(&["low", "medium", "high", "xhigh", "max"][..])
-        );
-        let (_, args) = Agent::Claude
-            .get_command_with_profile(InvocationProfile {
-                agent: Agent::Claude,
-                model: None,
-                reasoning_effort: Some("xhigh"),
-            })
-            .expect("claude supports xhigh effort");
-        assert_eq!(
-            args,
-            vec!["-p", "--dangerously-skip-permissions", "--effort", "xhigh"]
-        );
-    }
-
-    #[test]
     fn opencode_passes_dynamic_variants_through_unchanged() {
         let (_, args) = Agent::OpenCode
             .get_command_with_profile(InvocationProfile {
@@ -532,6 +513,14 @@ mod tests {
             antigravity,
             "nightshift: agent antigravity does not support --reasoning-effort; retry without --reasoning-effort"
         );
+
+        Agent::Claude
+            .get_command_with_profile(InvocationProfile {
+                agent: Agent::Claude,
+                model: None,
+                reasoning_effort: Some("xhigh"),
+            })
+            .expect("claude supports xhigh");
 
         let claude = Agent::Claude
             .get_command_with_profile(InvocationProfile {

@@ -85,7 +85,7 @@ nightshift hands your agent a single prompt per issue. These agents work out of 
 | --------------- | ----------- | -------------------- | --------------------------- | ------- |
 | `claude`        | `claude`    | yes                  | `--effort`: `low`, `medium`, `high`, `max` | [Anthropic Claude Code](https://docs.anthropic.com/en/docs/claude-code) |
 | `codex`         | `codex`     | yes                  | `-c model_reasoning_effort=…`: `minimal`, `low`, `medium`, `high`, `xhigh` | [OpenAI Codex CLI](https://github.com/openai/codex) |
-| `antigravity`   | `agy`       | no                   | no; explicit model or effort fails fast | [Google Antigravity CLI](https://antigravity.google/blog/introducing-google-antigravity-cli) |
+| `antigravity`   | `agy`       | yes (`--model`)      | `--effort`: `low`, `medium`, `high`, `max` | [Google Antigravity CLI](https://antigravity.google/blog/introducing-google-antigravity-cli) |
 | `cursor`        | `agent`     | yes                  | **Model-Encoded Effort**; no separate effort flag | [Cursor](https://cursor.com/cli) |
 | `pi`            | `pi`        | yes                  | `--thinking`: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max` | [Pi](https://pi.dev/) |
 | `opencode`      | `opencode`  | yes                  | `--variant`; preflight legend: `low`, `medium`, `high`, `xhigh`, `minimal`, `max`; whole-run variants pass through unchanged | [OpenCode](https://opencode.ai/docs/cli) (`--model` uses `provider/model`) |
@@ -95,7 +95,7 @@ nightshift hands your agent a single prompt per issue. These agents work out of 
 > [!IMPORTANT]
 > **Cursor uses Model-Encoded Effort.** Use `--model` or Cursor's model-only `--pick-models` preflight to choose a model slug that already represents the desired effort. nightshift never adds `--reasoning-effort`, rewrites Cursor model strings, or injects effort syntax into a model value. Cursor is invoked as `agent`, not `cursor-agent`.
 
-When `--model` is omitted, nightshift lets the selected agent use its persisted default model. When it is provided, nightshift passes it through unchanged for agents with a documented non-interactive model flag. If an agent does not support that flag, nightshift fails fast and tells you to retry without `--model`.
+When `--model` is omitted, nightshift lets the selected agent use its persisted default model. When it is provided, nightshift passes it through unchanged to the agent's non-interactive model flag.
 
 nightshift validates at the **capability level** only: whether the selected agent supports model or effort selection, and, except for OpenCode's pass-through variants, whether an effort is in nightshift's documented agent-native set. It does not scrape model catalogs, validate model names, rewrite model slugs, or enforce model-specific effort matrices. The selected agent remains responsible for accepting a model and any model-specific effort subset.
 

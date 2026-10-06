@@ -736,20 +736,26 @@ issues:
     }
 
     #[test]
-    fn prepare_rejects_antigravity_model() {
+    fn prepare_accepts_antigravity_model_and_effort() {
         let recipe = Recipe::from_yaml(
             r#"
 prd: 12
 agent: antigravity
 model: gemini
+reasoning_effort: high
 issues:
   - number: 42
     agent: antigravity
 "#,
         )
-        .expect("schema allows the field");
-        let error = recipe.prepare().expect_err("antigravity + model must fail");
-        assert!(error.contains("does not support --model"), "{error}");
+        .expect("schema allows the fields");
+        let prepared = recipe
+            .prepare()
+            .expect("antigravity accepts model and effort");
+        let defaults = prepared.whole_run_defaults();
+        let profile = resolve(defaults, prepared.per_issue_profiles().get(&42));
+        assert_eq!(profile.model, Some("gemini"));
+        assert_eq!(profile.reasoning_effort, Some("high"));
     }
 
     #[test]

@@ -240,19 +240,11 @@ fn write_skip_reason(io: &mut Io<'_>, field: &str, reason: &str) -> std::io::Res
     )
 }
 
-fn effort_skip_reason(agent: Agent) -> &'static str {
-    match agent {
-        Agent::Cursor => "model-encoded effort",
-        Agent::Antigravity => "no separate effort control",
-        _ => "agent does not support separate effort control",
-    }
-}
-
 /// Collects enabled Invocation Profile Preflight dimensions for every planned child issue.
 ///
 /// Fields are collected in agent, model, effort, prompt, mode order for enabled
 /// columns. Each row resolves its agent before capability checks, so unsupported
-/// model or effort fields are skipped without blocking other rows. Prompt and
+/// effort fields are skipped without blocking other rows. Prompt and
 /// mode are gated only on `dimensions.prompts`. Blank agent/model/effort fields
 /// remain absent for Same-Agent Defaults Inheritance. A blank prompt path
 /// inherits the run-wide directive policy; a supplied path is loaded after every
@@ -302,22 +294,17 @@ pub fn pick_profiles(
         let inherits_defaults = resolved_agent == defaults.agent;
 
         let model = if dimensions.models {
-            if resolved_agent.ensure_model_supported().is_ok() {
-                write_field_prompt(
-                    io,
-                    "model",
-                    if inherits_defaults {
-                        defaults.model.unwrap_or("agent default")
-                    } else {
-                        "agent default"
-                    },
-                )?;
-                let model = read_line(io)?;
-                (!model.is_empty()).then_some(model)
-            } else {
-                write_skip_reason(io, "model", "agent does not support --model")?;
-                None
-            }
+            write_field_prompt(
+                io,
+                "model",
+                if inherits_defaults {
+                    defaults.model.unwrap_or("agent default")
+                } else {
+                    "agent default"
+                },
+            )?;
+            let model = read_line(io)?;
+            (!model.is_empty()).then_some(model)
         } else {
             None
         };
@@ -339,7 +326,7 @@ pub fn pick_profiles(
                 )?;
                 parse_effort_selection(&read_line(io)?, efforts)?
             } else {
-                write_skip_reason(io, "effort", effort_skip_reason(resolved_agent))?;
+                write_skip_reason(io, "effort", "model-encoded effort")?;
                 None
             }
         } else {
@@ -575,9 +562,9 @@ mod tests {
     }
 
     #[test]
-    fn pick_profiles_skips_incapable_columns_for_agent_model_rows() {
+    fn pick_profiles_skips_cursor_effort_and_collects_antigravity_model_and_effort() {
         let planned = [issue(10), issue(11)];
-        let mut input = Cursor::new(b"4\ncursor-thinking-high\n3\n\n".as_slice());
+        let mut input = Cursor::new(b"4\ncursor-thinking-high\n3\nagy-model\n3\n\n".as_slice());
         let mut output = Vec::new();
         let mut io = Io::new(true, &mut input, &mut output);
 
@@ -602,12 +589,12 @@ mod tests {
         assert_eq!(profiles[&10].model.as_deref(), Some("cursor-thinking-high"));
         assert_eq!(profiles[&10].reasoning_effort, None);
         assert_eq!(profiles[&11].agent, Some(Agent::Antigravity));
-        assert_eq!(profiles[&11].model, None);
-        assert_eq!(profiles[&11].reasoning_effort, None);
+        assert_eq!(profiles[&11].model.as_deref(), Some("agy-model"));
+        assert_eq!(profiles[&11].reasoning_effort.as_deref(), Some("high"));
         let output = String::from_utf8(output).expect("preflight output is utf-8");
         assert!(output.contains("effort skipped: model-encoded effort"));
-        assert!(output.contains("model skipped: agent does not support --model"));
-        assert!(output.contains("effort skipped: no separate effort control"));
+        assert!(output.contains("Effort choices for antigravity"));
+        assert!(!output.contains("model skipped: agent does not support --model"));
     }
 
     #[test]

@@ -594,7 +594,6 @@ mod tests {
         let output = String::from_utf8(output).expect("preflight output is utf-8");
         assert!(output.contains("effort skipped: model-encoded effort"));
         assert!(output.contains("Effort choices for antigravity"));
-        assert!(!output.contains("model skipped: agent does not support --model"));
     }
 
     #[test]

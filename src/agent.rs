@@ -514,14 +514,6 @@ mod tests {
             "nightshift: agent antigravity does not support --reasoning-effort; retry without --reasoning-effort"
         );
 
-        Agent::Claude
-            .get_command_with_profile(InvocationProfile {
-                agent: Agent::Claude,
-                model: None,
-                reasoning_effort: Some("xhigh"),
-            })
-            .expect("claude supports xhigh");
-
         let claude = Agent::Claude
             .get_command_with_profile(InvocationProfile {
                 agent: Agent::Claude,

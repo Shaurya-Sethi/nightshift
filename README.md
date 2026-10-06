@@ -41,6 +41,8 @@ nightshift --parent 12 --agent claude --model claude-opus-5
 nightshift --parent 12 --agent claude --tui
 nightshift --parent 12 --agent claude --write-recipe
 nightshift --recipe parent-12-recipe.yaml
+nightshift --recipe parent-12-recipe.yaml --tui
+nightshift --recipe parent-12-recipe.yaml --tui --dry-run
 ```
 
 
@@ -60,8 +62,8 @@ nightshift --recipe parent-12-recipe.yaml
 | `--prompt-file`       |          | built-in guidelines       | File that overrides built-in directives for every issue unless a `--pick-prompts` row supplies a file |
 | `--append-prompt-file`|          | n/a                       | File appended to the resolved agent's built-in directives for every issue unless a `--pick-prompts` row supplies a file. Mutually exclusive with `--prompt-file`. |
 | `--dry-run`           |          | `false`                   | Show planned order and first prompt without starting an agent; requested preflight still runs        |
-| `--tui`               |          | `false`                   | Opt-in Watch Board. Requires stdin and stdout TTY; fails before GitHub or git work. While work is active, `q` / Ctrl-C stop after the current issue without killing the agent. Idle `q` / Ctrl-C / Enter dismisses. Exclusive with `--recipe` and `--write-recipe`. |
-| `--recipe`            |          | n/a                       | Start from a user-owned YAML run recipe. Exclusive with other run flags except `--dry-run`.          |
+| `--tui`               |          | `false`                   | Opt-in Watch Board, including recipe runs. Requires stdin and stdout TTY; fails before recipe loading, GitHub, or git work. While work is active, `q` / Ctrl-C stop after the current issue without killing the agent. Idle `q` / Ctrl-C / Enter dismisses. Exclusive with `--write-recipe`. |
+| `--recipe`            |          | n/a                       | Start from a user-owned YAML run recipe. Exclusive with other run flags except `--dry-run` and `--tui`. |
 | `--write-recipe`      |          | `parent-<parent>-recipe.yaml` | Write a valid recipe for the planned set and exit. Requires `--parent` and `--agent`. PATH is a file (not a directory). Exclusive with `--recipe`, `--tui`, and `--pick-*`. Empty planned set writes nothing. Stdout is the written path. Fails if the path exists. |
 
 ### Invocation profiles
@@ -72,7 +74,7 @@ An **invocation profile** is the agent, model, and reasoning effort used for one
 
 To choose per issue interactively, add any of `--pick-agents`, `--pick-efforts`, `--pick-models`, or `--pick-prompts` (TTY only). `--pick-efforts` and `--pick-models` cannot be combined; the other pick flags stack with either. Enter keeps a default. `q` or Ctrl-C cancels the whole picker; a partial selection never starts a run. Pick flags cannot be combined with `--recipe` or `--write-recipe`.
 
-`--write-recipe` is an argv command (`--parent` + `--agent`). It stamps the planned set into YAML and exits. The generated file is already a valid recipe. Edit rows to vary agent, model, effort, or prompt, then `nightshift --recipe PATH`. Recipe issue numbers must match the live planned set or the run fails before the loop. Paths inside the YAML are absolute. `--recipe --dry-run` validates without spawning.
+`--write-recipe` is an argv command (`--parent` + `--agent`). It stamps the planned set into YAML and exits. The generated file is already a valid recipe. Edit rows to vary agent, model, effort, or prompt, then `nightshift --recipe PATH`. Recipe issue numbers must match the live planned set or the run fails before the loop. Paths inside the YAML are absolute. `--recipe --dry-run` validates without spawning. Add `--tui` to display a recipe run or dry-run on the Watch Board; otherwise cooked output is used.
 
 Picker order, inheritance, recipes, dry-run, and agent-specific knobs: [Invocation profiles](docs/invocation-profiles.md).
 

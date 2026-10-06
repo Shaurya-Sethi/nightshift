@@ -29,3 +29,27 @@ fn tui_without_tty_fails_before_github_or_git() {
         "must fail before GitHub or git: {stderr}"
     );
 }
+
+#[test]
+fn recipe_tui_without_tty_fails_before_loading_recipe() {
+    let exe = env!("CARGO_BIN_EXE_nightshift");
+    for dry_run in [false, true] {
+        let mut command = Command::new(exe);
+        command.args(["--recipe", "missing-recipe.yaml", "--tui"]);
+        if dry_run {
+            command.arg("--dry-run");
+        }
+        let output = command
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .expect("nightshift should spawn");
+        assert!(!output.status.success());
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("--tui requires an interactive TTY"),
+            "{stderr}"
+        );
+    }
+}

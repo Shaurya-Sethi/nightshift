@@ -25,6 +25,12 @@ fn die(message: impl std::fmt::Display) -> ! {
     std::process::exit(1);
 }
 
+/// Captures git output when the Watch Board owns the terminal.
+fn git_for_run(repo: &str, tui: bool) -> Result<GitCliAdapter, Box<dyn std::error::Error>> {
+    let git = GitCliAdapter::for_repo(repo)?;
+    Ok(if tui { git.capture_stdio() } else { git })
+}
+
 fn main() -> ExitCode {
     let args = Args::parse();
     if let Err(e) = ensure_tui_tty(
@@ -36,7 +42,7 @@ fn main() -> ExitCode {
     }
 
     if let Some(path) = args.recipe.clone() {
-        return run_from_recipe(&path, args.dry_run);
+        return run_from_recipe(&path, args.dry_run, args.tui);
     }
 
     let github = GhCliAdapter;
@@ -52,16 +58,7 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
-    let git = match GitCliAdapter::for_repo(&repo) {
-        Ok(git) => {
-            if args.tui {
-                git.capture_stdio()
-            } else {
-                git
-            }
-        }
-        Err(e) => die(e),
-    };
+    let git = git_for_run(&repo, args.tui).unwrap_or_else(|e| die(e));
 
     if !git.base_branch_exists(&args.base_branch) {
         die(format!(
@@ -100,7 +97,7 @@ fn main() -> ExitCode {
     ExitCode::SUCCESS
 }
 
-fn run_from_recipe(path: &Path, dry_run: bool) -> ExitCode {
+fn run_from_recipe(path: &Path, dry_run: bool, tui: bool) -> ExitCode {
     let prepared = PreparedRecipe::load(path).unwrap_or_else(|e| die(e));
     let github = GhCliAdapter;
     let agent_runner = ProcessAgentRunner;
@@ -108,10 +105,7 @@ fn run_from_recipe(path: &Path, dry_run: bool) -> ExitCode {
         Ok(repo) => repo,
         Err(e) => die(e),
     };
-    let git = match GitCliAdapter::for_repo(&repo) {
-        Ok(git) => git,
-        Err(e) => die(e),
-    };
+    let git = git_for_run(&repo, tui).unwrap_or_else(|e| die(e));
     if !git.base_branch_exists(prepared.base_branch()) {
         die(format!(
             "nightshift: base branch {} not found in {}",
@@ -125,7 +119,7 @@ fn run_from_recipe(path: &Path, dry_run: bool) -> ExitCode {
         repo: &repo,
         base_branch: prepared.base_branch(),
         dry_run,
-        tui: false,
+        tui,
         whole_run_defaults: prepared.whole_run_defaults(),
         per_issue_profiles: prepared.per_issue_profiles().clone(),
         preflight_dimensions: PreflightDimensions::default(),

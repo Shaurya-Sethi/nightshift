@@ -11,6 +11,7 @@ Without `--tui`, the terminal shows only nightshift output: issue blocks, git ch
 `--tui` replaces the cooked stream with a full-screen Watch Board. Git checkout/pull output is not shown (it would corrupt the board). Agent `stdout` and `stderr` are still discarded.
 
 `--tui` needs stdin and stdout TTYs. It fails before any GitHub or git work if either is missing.
+Recipe runs accept `--tui` too; the TTY check runs before loading the recipe. Without `--tui`, recipes keep cooked output.
 
 ### Stopping
 

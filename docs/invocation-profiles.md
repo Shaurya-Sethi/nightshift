@@ -21,6 +21,7 @@ nightshift --parent 12 --agent claude --pick-agents --pick-models
 nightshift --parent 12 --agent claude --write-recipe
 nightshift --recipe parent-12-recipe.yaml
 nightshift --recipe parent-12-recipe.yaml --dry-run
+nightshift --recipe parent-12-recipe.yaml --tui --dry-run
 ```
 
 ```yaml
@@ -39,7 +40,7 @@ issues:
     model: gpt-5.2
 ```
 
-`--recipe PATH` is exclusive with other run flags except `--dry-run`. It is exclusive with `--tui` and all `--pick-*` flags. Paths inside the YAML (`prompt_file`) must be absolute. `prompt_file` requires `prompt_mode` (`append` or `replace`) at both layers.
+`--recipe PATH` is exclusive with other run flags except `--dry-run` and `--tui`. The Watch Board is a CLI display choice; the YAML needs no `tui` key. Without `--tui`, recipe runs keep cooked output. Recipe runs with `--tui` require stdin and stdout TTYs before the recipe is loaded. Paths inside the YAML (`prompt_file`) must be absolute. `prompt_file` requires `prompt_mode` (`append` or `replace`) at both layers.
 
 At startup, recipe issue numbers must equal the live planned set. YAML order is for humans; GitHub still picks the next ready child. A live issue number that is not in the recipe aborts. Unknown YAML keys, unpaired prompt fields, missing prompt files, and illegal agent/model/effort combinations fail before the loop.
 

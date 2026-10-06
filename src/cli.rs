@@ -69,10 +69,10 @@ pub struct Args {
     /// Simulate planned order and preview the first prompt and command without invoking an agent; requested preflight still runs.
     #[arg(long)]
     pub dry_run: bool,
-    /// Opt-in Watch Board. Requires stdin and stdout TTY and fails before GitHub or git work, including repo resolution. While work is active, q and Ctrl-C stop after the current issue without killing the agent. When idle, q, Ctrl-C, or Enter dismisses the board. Without this flag, cooked and non-TTY output stay unchanged.
+    /// Opt-in Watch Board, including recipe and dry runs. Requires stdin and stdout TTY and fails before recipe loading, GitHub, or git work. While work is active, q and Ctrl-C stop after the current issue without killing the agent. When idle, q, Ctrl-C, or Enter dismisses the board. Without this flag, cooked and non-TTY output stay unchanged.
     #[arg(long)]
     pub tui: bool,
-    /// User-owned YAML run recipe. Exclusive with run flags except --dry-run. Replaces TTY pickers.
+    /// User-owned YAML run recipe. Exclusive with run flags except --dry-run and --tui. Replaces TTY pickers.
     #[arg(
         long,
         value_name = "PATH",
@@ -90,7 +90,6 @@ pub struct Args {
             "prompt_file",
             "append_prompt_file",
             "base_branch",
-            "tui",
             "write_recipe"
         ]
     )]
@@ -446,7 +445,7 @@ mod tests {
         let help = command.render_long_help().to_string();
         assert!(help.contains("Requires stdin and stdout TTY"));
         assert!(help.contains("stop after the current issue"));
-        assert!(help.contains("fails before GitHub or git work"));
+        assert!(help.contains("fails before recipe loading, GitHub, or git work"));
     }
 
     #[test]
@@ -499,11 +498,21 @@ mod tests {
     }
 
     #[test]
-    fn recipe_conflicts_with_parent_and_tui() {
+    fn recipe_allows_tui_with_or_without_dry_run() {
+        for extra in [Vec::new(), vec!["--dry-run"]] {
+            let mut argv = vec!["nightshift", "--recipe", "run.yaml", "--tui"];
+            argv.extend(extra.iter().copied());
+            let args = Args::try_parse_from(argv).expect("recipe Watch Board should parse");
+            assert!(args.tui);
+            assert_eq!(args.dry_run, !extra.is_empty());
+        }
+    }
+
+    #[test]
+    fn recipe_conflicts_with_scope_profile_and_picker_flags() {
         assert!(
             Args::try_parse_from(["nightshift", "--recipe", "run.yaml", "--parent", "1"]).is_err()
         );
-        assert!(Args::try_parse_from(["nightshift", "--recipe", "run.yaml", "--tui"]).is_err());
         assert!(
             Args::try_parse_from(["nightshift", "--recipe", "run.yaml", "--pick-agents"]).is_err()
         );

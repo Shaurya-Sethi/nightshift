@@ -1223,8 +1223,8 @@ mod tests {
             (
                 Agent::Claude,
                 None,
-                Some("xhigh"),
-                "does not support --reasoning-effort xhigh",
+                Some("ultracode"),
+                "does not support --reasoning-effort ultracode",
             ),
         ];
         for (agent, model, effort, needle) in cases {

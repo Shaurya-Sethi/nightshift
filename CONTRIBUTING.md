@@ -13,7 +13,7 @@ Adding a coding-agent CLI requires command wiring, Invocation Profile capability
 
 ### Invocation Profile Preflight
 
-`--pick-agents` lists `Agent::all()` without probing `PATH`; keep that list in sync when adding an agent. `--pick-agents` may stack with `--pick-efforts` or `--pick-models`; rows collect agent, then model when enabled and supported, then effort when enabled and supported. When `--pick-prompts` is on, collect prompt then mode after effort. Enter on path inherits run-wide; Enter on mode is append; skip the mode line when the path is blank. A row that selects another agent does not inherit whole-run `--model` or `--reasoning-effort`; it uses that agent's defaults unless the row supplies a value. This is Same-Agent Defaults Inheritance. Cursor skips separate effort because it is model-encoded; Antigravity skips model and effort.
+`--pick-agents` lists `Agent::all()` without probing `PATH`; keep that list in sync when adding an agent. `--pick-agents` may stack with `--pick-efforts` or `--pick-models`; rows collect agent, then model when enabled and supported, then effort when enabled and supported. When `--pick-prompts` is on, collect prompt then mode after effort. Enter on path inherits run-wide; Enter on mode is append; skip the mode line when the path is blank. A row that selects another agent does not inherit whole-run `--model` or `--reasoning-effort`; it uses that agent's defaults unless the row supplies a value. This is Same-Agent Defaults Inheritance. Cursor skips separate effort because it is model-encoded; Antigravity accepts both `--model` and `--effort` in print mode.
 
 ### Confirm upstream behavior first
 
@@ -43,7 +43,7 @@ Do not infer flags from a blog post, another wrapper, or a model catalog. If loc
 3. Wire model capability:
 
     - With a documented non-interactive model flag, pass the supplied `--model` string unchanged from `get_command_with_profile()`.
-    - Without one, extend `ensure_model_supported()` to reject explicit `--model` before spawn. Include the agent name, flag, and a retry-without-flag hint.
+    - If a future agent lacks one, add capability-level rejection of explicit `--model` before spawn, plus picker skip handling. Include the agent name, flag, and a retry-without-flag hint.
 
 4. Wire reasoning-effort capability:
 
@@ -55,7 +55,7 @@ Do not infer flags from a blog post, another wrapper, or a model catalog. If loc
       Self::MyNewAgent => args.extend(["--effort".into(), effort.into()]),
       ```
 
-    - Without a separate effort flag, return `None` from `supported_reasoning_efforts()` and extend `validate_reasoning_effort()` to hard-reject `--reasoning-effort` with an actionable hint. This also makes `--pick-efforts` fail before fetch.
+    - Without a separate effort flag, return `None` from `supported_reasoning_efforts()` and extend `validate_reasoning_effort()` to hard-reject `--reasoning-effort` with an actionable hint. This also makes `--pick-efforts` fail before fetch when `--pick-agents` is off.
     - For **Model-Encoded Effort** agents (Cursor pattern), keep model support if the CLI has it, but expose no separate effort control. `--pick-models` becomes model-only; users choose a model slug that encodes effort. Document that nightshift never adds `--reasoning-effort`, rewrites model strings, or injects effort syntax.
 
 5. Validate at the capability level only:

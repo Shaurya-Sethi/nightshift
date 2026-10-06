@@ -95,11 +95,13 @@ impl Agent {
             Self::Pi => Some(&["off", "minimal", "low", "medium", "high", "xhigh", "max"]),
             Self::Copilot => Some(&["none", "minimal", "low", "medium", "high", "xhigh", "max"]),
             Self::Claude => Some(&["low", "medium", "high", "xhigh", "max"]),
+            // `agy --help` also advertises max, but headless `-p` accepts only these levels.
+            Self::Antigravity => Some(&["low", "medium", "high"]),
             Self::Codex => Some(&["minimal", "low", "medium", "high", "xhigh"]),
             // picker legend; local `opencode run --help` also examples max/minimal.
             // whole-run --variant values still pass through unchanged.
             Self::OpenCode => Some(&["low", "medium", "high", "xhigh", "minimal", "max"]),
-            Self::Antigravity | Self::Cursor => None,
+            Self::Cursor => None,
         }
     }
 
@@ -111,17 +113,14 @@ impl Agent {
     ///
     /// # Errors
     ///
-    /// Returns an error when a requested model or reasoning effort is not
-    /// supported by this agent, or when effort is outside its native enum.
+    /// Returns an error when reasoning effort is unsupported by this agent or
+    /// outside its native enum.
     /// OpenCode is the exception: any `--variant` string is passed through for
     /// that CLI to validate.
     pub fn get_command_with_profile(
         self,
         profile: InvocationProfile<'_>,
     ) -> Result<(&'static str, Vec<String>), String> {
-        if profile.model.is_some() {
-            self.ensure_model_supported()?;
-        }
         if let Some(effort) = profile.reasoning_effort {
             self.validate_reasoning_effort(effort)?;
         }
@@ -158,8 +157,8 @@ impl Agent {
     ///
     /// # Errors
     ///
-    /// Returns an error when `model` is provided for an agent whose CLI does
-    /// not expose a documented non-interactive model flag.
+    /// This model-only profile currently has no validation failures; the
+    /// `Result` matches [`Self::get_command_with_profile`].
     pub fn get_command_with_model(
         self,
         model: Option<&str>,
@@ -171,21 +170,6 @@ impl Agent {
         })
     }
 
-    /// Rejects agents that have no documented non-interactive `--model` flag.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when this agent cannot accept an explicit model.
-    pub(crate) fn ensure_model_supported(self) -> Result<(), String> {
-        if self == Self::Antigravity {
-            return Err(
-                "nightshift: agent antigravity does not support --model; retry without --model to use agy's persisted default model"
-                    .to_string(),
-            );
-        }
-        Ok(())
-    }
-
     fn validate_reasoning_effort(self, effort: &str) -> Result<(), String> {
         // OpenCode variants are provider/model-specific and may be custom.
         if self == Self::OpenCode {
@@ -195,7 +179,6 @@ impl Agent {
         let Some(supported) = self.supported_reasoning_efforts() else {
             let hint = match self {
                 Self::Cursor => "; choose a --model slug that encodes the desired effort",
-                Self::Antigravity => "; retry without --reasoning-effort",
                 _ => unreachable!("all effort-capable agents have an enum"),
             };
             return Err(format!(
@@ -217,10 +200,10 @@ impl Agent {
         match self {
             Self::Pi => args.extend(["--thinking".into(), effort.into()]),
             Self::Copilot => args.extend(["--reasoning-effort".into(), effort.into()]),
-            Self::Claude => args.extend(["--effort".into(), effort.into()]),
+            Self::Claude | Self::Antigravity => args.extend(["--effort".into(), effort.into()]),
             Self::Codex => args.extend(["-c".into(), format!("model_reasoning_effort={effort}")]),
             Self::OpenCode => args.extend(["--variant".into(), effort.into()]),
-            Self::Antigravity | Self::Cursor => {
+            Self::Cursor => {
                 unreachable!("unsupported effort is rejected before argv construction")
             }
         }
@@ -502,18 +485,6 @@ mod tests {
             "nightshift: agent cursor does not support --reasoning-effort; choose a --model slug that encodes the desired effort"
         );
 
-        let antigravity = Agent::Antigravity
-            .get_command_with_profile(InvocationProfile {
-                agent: Agent::Antigravity,
-                model: None,
-                reasoning_effort: Some("high"),
-            })
-            .expect_err("antigravity has no reasoning-effort control");
-        assert_eq!(
-            antigravity,
-            "nightshift: agent antigravity does not support --reasoning-effort; retry without --reasoning-effort"
-        );
-
         let claude = Agent::Claude
             .get_command_with_profile(InvocationProfile {
                 agent: Agent::Claude,
@@ -647,11 +618,39 @@ mod tests {
     }
 
     #[test]
-    fn antigravity_rejects_explicit_model() {
-        let err = Agent::Antigravity
-            .get_command_with_model(Some("gemini-3.1-pro"))
-            .expect_err("antigravity has no documented --model flag");
-        assert!(err.contains("does not support --model"));
+    fn antigravity_passes_model_and_native_effort_to_headless_cli() {
+        assert_eq!(
+            Agent::Antigravity.supported_reasoning_efforts(),
+            Some(&["low", "medium", "high"][..])
+        );
+        let (program, args) = Agent::Antigravity
+            .get_command_with_profile(InvocationProfile {
+                agent: Agent::Antigravity,
+                model: Some("gemini-3.1-pro"),
+                reasoning_effort: Some("high"),
+            })
+            .expect("agy supports both flags in print mode");
+        assert_eq!(program, "agy");
+        assert_eq!(
+            args,
+            vec![
+                "-p",
+                "--dangerously-skip-permissions",
+                "--model",
+                "gemini-3.1-pro",
+                "--effort",
+                "high",
+            ]
+        );
+
+        let error = Agent::Antigravity
+            .get_command_with_profile(InvocationProfile {
+                agent: Agent::Antigravity,
+                model: None,
+                reasoning_effort: Some("max"),
+            })
+            .expect_err("agy headless mode rejects max effort");
+        assert!(error.contains("supported values: low, medium, high"));
     }
 
     #[test]

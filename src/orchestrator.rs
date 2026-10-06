@@ -112,11 +112,6 @@ fn startup(
             )
         })?;
     }
-    if !dimensions.agents && dimensions.models {
-        default_agent
-            .ensure_model_supported()
-            .map_err(|error| format!("{error}; --pick-models is unavailable for this agent"))?;
-    }
     if preflight_enabled {
         let Some(io) = preflight_io.as_ref() else {
             return Err("nightshift: Invocation Profile Preflight requires terminal I/O".into());
@@ -1210,9 +1205,9 @@ mod tests {
         let cases = [
             (
                 Agent::Antigravity,
-                Some("gemini"),
                 None,
-                "does not support --model",
+                Some("max"),
+                "does not support --reasoning-effort max",
             ),
             (
                 Agent::Cursor,
@@ -1249,51 +1244,77 @@ mod tests {
 
     #[test]
     fn pick_efforts_without_pick_agents_fails_before_any_github_call() {
-        for agent in [Agent::Cursor, Agent::Antigravity] {
-            let github = mock_github("[]", HashMap::new());
-            let runner = idle_agent();
-            let config = workflow(
-                1,
-                false,
-                defaults(agent, None, None),
-                RunEphemeralProfileMap::new(),
-                PreflightDimensions {
-                    efforts: true,
-                    ..PreflightDimensions::default()
-                },
-                DirectivePolicy::Replace("test directives"),
-            );
-            let error = run_with_preflight_io(config, runtime(&github, &runner), None)
-                .expect_err("incapable agent must reject --pick-efforts")
-                .to_string();
-            assert!(error.contains("does not support --pick-efforts"));
-            assert_no_github_calls(&github);
-            assert!(!runner.ran.get());
-        }
-    }
-
-    #[test]
-    fn pick_models_on_antigravity_fails_before_any_github_call() {
         let github = mock_github("[]", HashMap::new());
         let runner = idle_agent();
         let config = workflow(
             1,
             false,
-            defaults(Agent::Antigravity, None, None),
+            defaults(Agent::Cursor, None, None),
             RunEphemeralProfileMap::new(),
             PreflightDimensions {
-                models: true,
+                efforts: true,
                 ..PreflightDimensions::default()
             },
             DirectivePolicy::Replace("test directives"),
         );
         let error = run_with_preflight_io(config, runtime(&github, &runner), None)
-            .expect_err("antigravity must reject --pick-models")
+            .expect_err("cursor must reject --pick-efforts")
             .to_string();
-        assert!(error.contains("does not support --model"));
-        assert!(error.contains("--pick-models"));
+        assert!(error.contains("does not support --pick-efforts"));
         assert_no_github_calls(&github);
         assert!(!runner.ran.get());
+    }
+
+    #[test]
+    fn antigravity_model_and_effort_pickers_reach_the_runner() {
+        for (dimensions, input, expected_model) in [
+            (
+                PreflightDimensions {
+                    models: true,
+                    ..PreflightDimensions::default()
+                },
+                "agy-model\n3\n\n",
+                Some("agy-model"),
+            ),
+            (
+                PreflightDimensions {
+                    efforts: true,
+                    ..PreflightDimensions::default()
+                },
+                "3\n\n",
+                None,
+            ),
+        ] {
+            let github = mock_github(
+                graph(&[child(10, 42, &[])]),
+                HashMap::from([(42, "Product requirements".into())]),
+            );
+            let runner = MockAgent {
+                ran: Cell::new(false),
+                received_model: RefCell::new(None),
+                received_effort: RefCell::new(None),
+                error_on_run: true,
+            };
+            let mut input = Cursor::new(input.as_bytes());
+            let mut output = Vec::new();
+            let mut preflight_io = crate::preflight::Io::new(true, &mut input, &mut output);
+            let config = workflow(
+                1,
+                false,
+                defaults(Agent::Antigravity, None, None),
+                RunEphemeralProfileMap::new(),
+                dimensions,
+                DirectivePolicy::Replace("test directives"),
+            );
+
+            let error =
+                run_with_preflight_io(config, runtime(&github, &runner), Some(&mut preflight_io))
+                    .expect_err("fake runner stops after recording the selected profile")
+                    .to_string();
+            assert!(error.contains("mock agent stopped"), "{error}");
+            assert_eq!(runner.received_model.borrow().as_deref(), expected_model);
+            assert_eq!(runner.received_effort.borrow().as_deref(), Some("high"));
+        }
     }
 
     #[test]

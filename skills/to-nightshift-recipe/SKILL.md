@@ -27,7 +27,7 @@ Ask, in order:
 
 **Capability hard-stop** before `--write-recipe`: check the whole-run agent (and any `--model` / `--reasoning-effort`) against this repo's README agent matrix. Refuse illegal combos. Point at the matrix; do not invent flags.
 
-When filling per-issue rows later, skip knobs that row's agent cannot use (Cursor: no separate effort; Antigravity: no model or effort). Same-agent defaults: whole-run `model` / `reasoning_effort` apply only while the row agent equals the whole-run `agent`.
+When filling per-issue rows later, skip knobs that row's agent cannot use (Cursor: no separate effort). Antigravity supports both `model` and `reasoning_effort`. Same-agent defaults: whole-run `model` / `reasoning_effort` apply only while the row agent equals the whole-run `agent`.
 
 **Done when:** default agent, granularity, and model allowlist/pin are explicit, and the combo is capability-legal.
 
@@ -74,7 +74,7 @@ Using PRD, issue bodies, and codebase as needed, assign **best fit** profiles in
 - Keep whole-run `agent` / `model` / `reasoning_effort` at the top of the file.
 - Change a row's `agent`, `model`, or `reasoning_effort` only when it should differ. Omit a field to inherit (same-agent rule).
 - Cursor: effort lives in the model slug; do not set `reasoning_effort` on that row.
-- Antigravity: agent only; do not set `model` or `reasoning_effort`.
+- Antigravity: `model` comes from the user allowlist; `reasoning_effort` accepts `low`, `medium`, or `high` in headless mode (not `max`).
 - Other agents: effort from the README matrix; models from the user allowlist.
 - `prompt_file` requires `prompt_mode` (`append` or `replace`). Paths must be absolute.
 - Do not add `pick_*`, `tui`, `dry_run`, or `append_prompt_file` keys. Do not change `number`. `title` is documentary.

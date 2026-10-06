@@ -94,7 +94,7 @@ impl Agent {
         match self {
             Self::Pi => Some(&["off", "minimal", "low", "medium", "high", "xhigh", "max"]),
             Self::Copilot => Some(&["none", "minimal", "low", "medium", "high", "xhigh", "max"]),
-            Self::Claude => Some(&["low", "medium", "high", "max"]),
+            Self::Claude => Some(&["low", "medium", "high", "xhigh", "max"]),
             Self::Codex => Some(&["minimal", "low", "medium", "high", "xhigh"]),
             // picker legend; local `opencode run --help` also examples max/minimal.
             // whole-run --variant values still pass through unchanged.
@@ -480,16 +480,18 @@ mod tests {
     fn claude_only_exposes_documented_reasoning_effort_values() {
         assert_eq!(
             Agent::Claude.supported_reasoning_efforts(),
-            Some(&["low", "medium", "high", "max"][..])
+            Some(&["low", "medium", "high", "xhigh", "max"][..])
         );
-        assert!(
-            Agent::Claude
-                .get_command_with_profile(InvocationProfile {
-                    agent: Agent::Claude,
-                    model: None,
-                    reasoning_effort: Some("xhigh"),
-                })
-                .is_err()
+        let (_, args) = Agent::Claude
+            .get_command_with_profile(InvocationProfile {
+                agent: Agent::Claude,
+                model: None,
+                reasoning_effort: Some("xhigh"),
+            })
+            .expect("claude supports xhigh effort");
+        assert_eq!(
+            args,
+            vec!["-p", "--dangerously-skip-permissions", "--effort", "xhigh"]
         );
     }
 

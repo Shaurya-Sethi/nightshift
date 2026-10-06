@@ -1,13 +1,13 @@
 # Keeping Your System Awake
 
-nightshift runs a loop that can take hours: one agent invocation per issue, repeated until a whole PRD is done. Most operating systems will suspend or sleep during that time if left unattended. This document describes how to prevent that on each platform.
+nightshift runs a loop that can take hours: one agent invocation per issue, repeated until the parent issue's children are done. Most operating systems will suspend or sleep during that time if left unattended. This document describes how to prevent that on each platform.
 
 ## macOS
 
 Wrap the nightshift command with `caffeinate -i`. This prevents the system from idle-sleeping for the duration of the process:
 
 ```bash
-caffeinate -i nightshift --prd 10 --agent claude
+caffeinate -i nightshift --parent 10 --agent claude
 ```
 
 `caffeinate` is built into macOS, so no install is required. When nightshift exits, the caffeine hold is released automatically.
@@ -21,7 +21,7 @@ The simplest option is to run inside a **tmux** or **screen** session, which als
 tmux new-session -s nightshift
 
 # inside the session, run normally
-nightshift --prd 10 --agent claude
+nightshift --parent 10 --agent claude
 
 # detach with Ctrl-b d; nightshift keeps running in the background
 # reattach later with:
@@ -32,7 +32,7 @@ Alternatively, use `systemd-inhibit` to block sleep at the system level:
 
 ```bash
 systemd-inhibit --what=sleep --why="nightshift running" \
-  nightshift --prd 10 --agent claude
+  nightshift --parent 10 --agent claude
 ```
 
 ## Windows

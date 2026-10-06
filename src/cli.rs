@@ -1,7 +1,7 @@
 //! Command-line interface for configuring a nightshift run.
 //!
 //! The parsed arguments are translated into [`crate::orchestrator::WorkflowConfig`]
-//! by the binary entrypoint. They identify the PRD, optional issue floor,
+//! by the binary entrypoint. They identify the parent issue, optional issue floor,
 //! repository, Whole-Run Invocation Defaults, optional Preflight Dimensions,
 //! directive source, base branch, dry-run mode, opt-in `--tui` Watch Board,
 //! and optional `--recipe` / `--write-recipe` YAML paths.
@@ -17,7 +17,7 @@ use crate::orchestrator::WorkflowConfig;
 use crate::prompt::DirectivePolicy;
 use crate::recipe::default_write_path;
 
-/// CLI arguments for one PRD child-issue loop.
+/// CLI arguments for one parent issue's child-issue loop.
 #[derive(Parser)]
 #[command(
     name = "nightshift",
@@ -27,10 +27,10 @@ use crate::recipe::default_write_path;
     help_template = "{about}\n\nAuthor: {author}\n\nUsage: {usage}\n\n{all-args}"
 )]
 pub struct Args {
-    /// PRD issue number whose body provides shared context for child issues.
+    /// Parent issue number whose body provides shared context for child issues.
     #[arg(long, required_unless_present = "recipe")]
-    pub prd: Option<u32>,
-    /// Lowest child issue number to consider, useful when resuming partway through a PRD.
+    pub parent: Option<u32>,
+    /// Lowest child issue number to consider, useful when resuming partway through a parent issue.
     #[arg(long, default_value_t = 0)]
     pub issue: u32,
     /// GitHub repository slug in `owner/name` form, or omitted to use `gh repo view`.
@@ -77,7 +77,7 @@ pub struct Args {
         long,
         value_name = "PATH",
         conflicts_with_all = [
-            "prd",
+            "parent",
             "agent",
             "issue",
             "repo",
@@ -95,7 +95,7 @@ pub struct Args {
         ]
     )]
     pub recipe: Option<PathBuf>,
-    /// Write a recipe YAML for the planned set and exit without starting a run. Default path is prd-<prd>-recipe.yaml in the current directory.
+    /// Write a recipe YAML for the planned set and exit without starting a run. Default path is parent-<parent>-recipe.yaml in the current directory.
     #[arg(
         long,
         value_name = "PATH",
@@ -138,7 +138,7 @@ impl Args {
         directive_policy: DirectivePolicy<'a>,
     ) -> WorkflowConfig<'a> {
         WorkflowConfig {
-            prd: self.prd.expect("clap requires --prd unless --recipe"),
+            parent: self.parent.expect("clap requires --parent unless --recipe"),
             issue: self.issue,
             repo,
             base_branch: &self.base_branch,
@@ -163,12 +163,12 @@ impl Args {
 
     /// Destination for `--write-recipe`. `None` when the flag was not passed.
     ///
-    /// Flag with no value becomes `prd-<prd>-recipe.yaml`.
+    /// Flag with no value becomes `parent-<parent>-recipe.yaml`.
     pub fn write_recipe_path(&self) -> Option<PathBuf> {
         match &self.write_recipe {
             None => None,
             Some(None) => Some(default_write_path(
-                self.prd.expect("clap requires --prd unless --recipe"),
+                self.parent.expect("clap requires --parent unless --recipe"),
             )),
             Some(Some(path)) => Some(path.clone()),
         }
@@ -184,13 +184,21 @@ mod tests {
     use clap::{CommandFactory, Parser};
 
     #[test]
+    fn parent_is_the_only_parent_issue_flag() {
+        let args = Args::try_parse_from(["nightshift", "--parent", "12", "--agent", "claude"])
+            .expect("--parent should select the parent issue");
+        assert!(args.agent.is_some());
+        assert!(Args::try_parse_from(["nightshift", "--prd", "12", "--agent", "claude"]).is_err());
+    }
+
+    #[test]
     fn opencode_agent_value_is_unhyphenated() {
-        let args = Args::try_parse_from(["nightshift", "--prd", "1", "--agent", "opencode"])
+        let args = Args::try_parse_from(["nightshift", "--parent", "1", "--agent", "opencode"])
             .expect("opencode is the clap value name");
         assert_eq!(args.agent, Some(Agent::OpenCode));
 
         assert!(
-            Args::try_parse_from(["nightshift", "--prd", "1", "--agent", "open-code"]).is_err(),
+            Args::try_parse_from(["nightshift", "--parent", "1", "--agent", "open-code"]).is_err(),
             "OpenCode must not kebab-case to open-code"
         );
     }
@@ -232,7 +240,7 @@ mod tests {
     fn pick_agents_enables_agent_preflight_dimension() {
         let args = Args::try_parse_from([
             "nightshift",
-            "--prd",
+            "--parent",
             "42",
             "--agent",
             "pi",
@@ -254,7 +262,7 @@ mod tests {
     fn pick_efforts_enables_effort_preflight_dimension() {
         let args = Args::try_parse_from([
             "nightshift",
-            "--prd",
+            "--parent",
             "42",
             "--agent",
             "pi",
@@ -276,7 +284,7 @@ mod tests {
     fn pick_models_enables_model_preflight_dimension() {
         let args = Args::try_parse_from([
             "nightshift",
-            "--prd",
+            "--parent",
             "42",
             "--agent",
             "pi",
@@ -298,7 +306,7 @@ mod tests {
     fn pick_agents_combines_with_efforts() {
         let args = Args::try_parse_from([
             "nightshift",
-            "--prd",
+            "--parent",
             "42",
             "--agent",
             "pi",
@@ -322,7 +330,7 @@ mod tests {
     fn pick_agents_combines_with_models() {
         let args = Args::try_parse_from([
             "nightshift",
-            "--prd",
+            "--parent",
             "42",
             "--agent",
             "pi",
@@ -346,7 +354,7 @@ mod tests {
     fn pick_efforts_conflicts_with_pick_models() {
         let parsed = Args::try_parse_from([
             "nightshift",
-            "--prd",
+            "--parent",
             "42",
             "--agent",
             "pi",
@@ -361,7 +369,7 @@ mod tests {
     fn append_prompt_file_conflicts_with_prompt_file() {
         let parsed = Args::try_parse_from([
             "nightshift",
-            "--prd",
+            "--parent",
             "42",
             "--agent",
             "pi",
@@ -378,7 +386,7 @@ mod tests {
     fn pick_prompts_enables_prompt_preflight_dimension() {
         let args = Args::try_parse_from([
             "nightshift",
-            "--prd",
+            "--parent",
             "42",
             "--agent",
             "pi",
@@ -400,7 +408,7 @@ mod tests {
     fn pick_prompts_combines_with_pick_agents() {
         let args = Args::try_parse_from([
             "nightshift",
-            "--prd",
+            "--parent",
             "42",
             "--agent",
             "pi",
@@ -422,11 +430,11 @@ mod tests {
 
     #[test]
     fn tui_flag_is_opt_in_and_help_explains_tty_and_stop() {
-        let args = Args::try_parse_from(["nightshift", "--prd", "42", "--agent", "pi"])
+        let args = Args::try_parse_from(["nightshift", "--parent", "42", "--agent", "pi"])
             .expect("tui is optional");
         assert!(!args.tui);
 
-        let args = Args::try_parse_from(["nightshift", "--prd", "42", "--agent", "pi", "--tui"])
+        let args = Args::try_parse_from(["nightshift", "--parent", "42", "--agent", "pi", "--tui"])
             .expect("--tui should parse");
         assert!(args.tui);
         assert!(
@@ -471,14 +479,14 @@ mod tests {
     }
 
     #[test]
-    fn recipe_parses_without_prd_or_agent() {
+    fn recipe_parses_without_parent_or_agent() {
         let args = Args::try_parse_from(["nightshift", "--recipe", "run.yaml"])
-            .expect("--recipe should not require --prd or --agent");
+            .expect("--recipe should not require --parent or --agent");
         assert_eq!(
             args.recipe.as_deref(),
             Some(std::path::Path::new("run.yaml"))
         );
-        assert!(args.prd.is_none());
+        assert!(args.parent.is_none());
         assert!(args.agent.is_none());
         assert!(args.write_recipe_path().is_none());
     }
@@ -491,9 +499,9 @@ mod tests {
     }
 
     #[test]
-    fn recipe_conflicts_with_prd_and_tui() {
+    fn recipe_conflicts_with_parent_and_tui() {
         assert!(
-            Args::try_parse_from(["nightshift", "--recipe", "run.yaml", "--prd", "1"]).is_err()
+            Args::try_parse_from(["nightshift", "--recipe", "run.yaml", "--parent", "1"]).is_err()
         );
         assert!(Args::try_parse_from(["nightshift", "--recipe", "run.yaml", "--tui"]).is_err());
         assert!(
@@ -533,11 +541,11 @@ mod tests {
     }
 
     #[test]
-    fn write_recipe_requires_prd_and_agent() {
+    fn write_recipe_requires_parent_and_agent() {
         assert!(Args::try_parse_from(["nightshift", "--write-recipe"]).is_err());
         let args = Args::try_parse_from([
             "nightshift",
-            "--prd",
+            "--parent",
             "12",
             "--agent",
             "claude",
@@ -546,7 +554,7 @@ mod tests {
         .expect("--write-recipe with no path should parse");
         assert_eq!(
             args.write_recipe_path(),
-            Some(std::path::PathBuf::from("prd-12-recipe.yaml"))
+            Some(std::path::PathBuf::from("parent-12-recipe.yaml"))
         );
     }
 
@@ -554,7 +562,7 @@ mod tests {
     fn write_recipe_keeps_explicit_path() {
         let args = Args::try_parse_from([
             "nightshift",
-            "--prd",
+            "--parent",
             "12",
             "--agent",
             "claude",
@@ -573,7 +581,7 @@ mod tests {
         assert!(
             Args::try_parse_from([
                 "nightshift",
-                "--prd",
+                "--parent",
                 "1",
                 "--agent",
                 "pi",
@@ -586,7 +594,7 @@ mod tests {
         assert!(
             Args::try_parse_from([
                 "nightshift",
-                "--prd",
+                "--parent",
                 "1",
                 "--agent",
                 "pi",
@@ -598,7 +606,7 @@ mod tests {
         assert!(
             Args::try_parse_from([
                 "nightshift",
-                "--prd",
+                "--parent",
                 "1",
                 "--agent",
                 "pi",
@@ -613,7 +621,7 @@ mod tests {
     fn write_recipe_allows_dry_run() {
         let args = Args::try_parse_from([
             "nightshift",
-            "--prd",
+            "--parent",
             "12",
             "--agent",
             "claude",
@@ -624,7 +632,7 @@ mod tests {
         assert!(args.dry_run);
         assert_eq!(
             args.write_recipe_path(),
-            Some(std::path::PathBuf::from("prd-12-recipe.yaml"))
+            Some(std::path::PathBuf::from("parent-12-recipe.yaml"))
         );
     }
 
@@ -634,6 +642,6 @@ mod tests {
         let help = command.render_long_help().to_string();
         assert!(help.contains("User-owned YAML run recipe"));
         assert!(help.contains("Exclusive with run flags except --dry-run"));
-        assert!(help.contains("prd-<prd>-recipe.yaml"));
+        assert!(help.contains("parent-<parent>-recipe.yaml"));
     }
 }

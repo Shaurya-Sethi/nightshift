@@ -1,8 +1,8 @@
-//! Selects the next PRD child issue from native GitHub relationship JSON.
+//! Selects the next child issue of a requested parent from native GitHub relationship JSON.
 //!
-//! Membership is `parent.number == prd` (direct children only). Ordering uses
-//! `blockedBy.nodes[].state`: an issue is ready when every blocker node is
-//! closed. Issue bodies are not parsed.
+//! Membership requires `parent.number` to equal the requested issue number
+//! (direct children only). Ordering uses `blockedBy.nodes[].state`: an issue is
+//! ready when every blocker node is closed. Issue bodies are not parsed.
 
 use std::collections::HashSet;
 use std::error::Error;
@@ -47,7 +47,7 @@ pub struct IssuePlan {
     pub planned: Vec<GithubIssue>,
     /// Open candidates that simulation never reaches because blockers stay open.
     pub blocked: Vec<GithubIssue>,
-    /// True when any direct child of the PRD exists, including those below `--issue`.
+    /// True when any direct child of the requested parent exists, including those below `--issue`.
     pub has_open_children: bool,
 }
 
@@ -64,11 +64,11 @@ fn to_github_issue(issue: &ListedIssue) -> GithubIssue {
     }
 }
 
-fn is_prd_child(issue: &ListedIssue, prd: u32) -> bool {
+fn is_parent_child(issue: &ListedIssue, parent_number: u32) -> bool {
     issue
         .parent
         .as_ref()
-        .is_some_and(|parent| parent.number == prd)
+        .is_some_and(|parent| parent.number == parent_number)
 }
 
 fn is_ready(issue: &ListedIssue, simulated_closed: &HashSet<u32>) -> bool {
@@ -77,11 +77,11 @@ fn is_ready(issue: &ListedIssue, simulated_closed: &HashSet<u32>) -> bool {
     })
 }
 
-fn prd_slice(issues: &[ListedIssue], prd: u32, min_issue: u32) -> (Vec<&ListedIssue>, bool) {
+fn parent_slice(issues: &[ListedIssue], parent: u32, min_issue: u32) -> (Vec<&ListedIssue>, bool) {
     let mut candidates = Vec::new();
     let mut has_open_children = false;
     for issue in issues {
-        if is_prd_child(issue, prd) {
+        if is_parent_child(issue, parent) {
             has_open_children = true;
             if issue.number >= min_issue {
                 candidates.push(issue);
@@ -109,9 +109,9 @@ fn prd_slice(issues: &[ListedIssue], prd: u32, min_issue: u32) -> (Vec<&ListedIs
 /// assert_eq!(plan.planned[1].number, 11);
 /// assert!(plan.blocked.is_empty());
 /// ```
-pub fn plan_order(json: &str, prd: u32, min_issue: u32) -> Result<IssuePlan, Box<dyn Error>> {
+pub fn plan_order(json: &str, parent: u32, min_issue: u32) -> Result<IssuePlan, Box<dyn Error>> {
     let issues = parse_issues(json)?;
-    let (mut remaining, has_open_children) = prd_slice(&issues, prd, min_issue);
+    let (mut remaining, has_open_children) = parent_slice(&issues, parent, min_issue);
     remaining.sort_by_key(|issue| issue.number);
 
     let mut planned = Vec::new();
@@ -148,8 +148,8 @@ mod tests {
         serde_json::Value::Array(issues.to_vec()).to_string()
     }
 
-    fn first_planned(json: &str, prd: u32, min_issue: u32) -> Option<u32> {
-        plan_order(json, prd, min_issue)
+    fn first_planned(json: &str, parent: u32, min_issue: u32) -> Option<u32> {
+        plan_order(json, parent, min_issue)
             .unwrap()
             .planned
             .into_iter()
@@ -179,7 +179,7 @@ mod tests {
             "number": number,
             "title": format!("Child {number}"),
             "body": body,
-            "parent": parent.map(|prd| json!({ "number": prd, "title": "PRD" })),
+            "parent": parent.map(|parent| json!({ "number": parent, "title": "Parent" })),
             "blockedBy": { "nodes": nodes, "totalCount": total }
         })
     }
@@ -245,8 +245,8 @@ mod tests {
     }
 
     #[test]
-    fn prd_with_no_children_returns_empty_plan() {
-        let json = graph(&[child(10, Some(99), &[], "Other PRD.")]);
+    fn parent_with_no_children_returns_empty_plan() {
+        let json = graph(&[child(10, Some(99), &[], "Other Parent.")]);
         let plan = plan_order(&json, 42, 0).unwrap();
         assert!(!plan.has_open_children);
         assert!(plan.planned.is_empty());
@@ -266,7 +266,7 @@ mod tests {
         let json = graph(&[
             child(5, Some(42), &[], "Below floor."),
             child(10, Some(42), &[], "At floor."),
-            child(11, Some(99), &[], "Other PRD."),
+            child(11, Some(99), &[], "Other Parent."),
             child(12, Some(42), &[], "Above floor."),
         ]);
         let plan = plan_order(&json, 42, 10).unwrap();
@@ -299,7 +299,7 @@ mod tests {
 
     #[test]
     fn grandchild_is_not_a_member() {
-        let json = graph(&[child(10, Some(7), &[], "Parent is a child, not the PRD.")]);
+        let json = graph(&[child(10, Some(7), &[], "This issue has another parent.")]);
         let plan = plan_order(&json, 42, 0).unwrap();
         assert!(!plan.has_open_children);
         assert!(plan.planned.is_empty());
@@ -308,14 +308,14 @@ mod tests {
 
     #[test]
     fn body_parent_and_blockers_are_ignored() {
-        let claiming_other_prd = graph(&[child(
+        let claiming_other_parent = graph(&[child(
             10,
             Some(42),
             &[],
             "## Parent\n#99\n\n## Blocked by\n#7\n",
         )]);
-        assert_eq!(first_planned(&claiming_other_prd, 42, 0), Some(10));
-        assert_eq!(first_planned(&claiming_other_prd, 99, 0), None);
+        assert_eq!(first_planned(&claiming_other_parent, 42, 0), Some(10));
+        assert_eq!(first_planned(&claiming_other_parent, 99, 0), None);
 
         let body_only_member = graph(&[child(11, None, &[], "## Parent\n#42\n")]);
         let plan = plan_order(&body_only_member, 42, 0).unwrap();

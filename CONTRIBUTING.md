@@ -121,7 +121,7 @@ nightshift tests protect **workflow contracts** and should not be focused on cov
 
 Tests live next to the code they guard: `#[cfg(test)]` modules at the bottom of `src/*.rs`, so they can exercise pure logic and `pub(crate)` helpers without shelling out to `gh`, `git`, or any agent CLI.
 
-**Highest priority:** native GitHub relationship selection (`parent.number` for PRD membership, `blockedBy.nodes[].state` for ordering). Regressions there break candidate filtering and blocker gating. These tests should use JSON fixtures shaped like `gh issue list --json number,title,body,parent,blockedBy` output, with issue bodies that contain no `## Parent` / `## Blocked by` text, and be named after workflow behaviour, not function names.
+**Highest priority:** native GitHub relationship selection (`parent.number` for membership, `blockedBy.nodes[].state` for ordering). Regressions there break candidate filtering and blocker gating. These tests should use JSON fixtures shaped like `gh issue list --json number,title,body,parent,blockedBy` output, with issue bodies that contain no `## Parent` / `## Blocked by` text, and be named after workflow behaviour, not function names.
 
 **Secondary:** pure string helpers (e.g. GitHub remote slug parsing) and orchestrator loop tests via trait mocks (`GithubIssues`, `GitOps`, `AgentRunner`).
 
@@ -143,8 +143,8 @@ Process-runner integration tests live in [`tests/process_agent_runner.rs`](tests
 
 [`src/parser.rs`](src/parser.rs) is a pure function over `gh issue list` JSON. It does not read issue bodies.
 
-- **Membership:** `parent.number == prd`. Direct children only; grandchildren are ignored.
-- **Ordering:** an issue is ready when every `blockedBy.nodes[].state` is closed (case-insensitive). Empty `nodes` means ready. A blocker outside the PRD set still counts; honor the node's `state`.
+- **Membership:** `parent.number` equals the requested parent issue number. Direct children only; grandchildren are ignored.
+- **Ordering:** an issue is ready when every `blockedBy.nodes[].state` is closed (case-insensitive). Empty `nodes` means ready. A blocker outside the selected child set still counts; honor the node's `state`.
 - **Pick:** lowest ready issue number at or above `--issue`.
 - **No fallback:** `## Parent` / `## Blocked by` in the body is ignored.
 

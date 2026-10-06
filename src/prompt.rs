@@ -1,6 +1,6 @@
 //! Prompt construction for coding-agent runs.
 //!
-//! The orchestrator combines PRD context, the selected child issue body, and
+//! The orchestrator combines parent context, the selected child issue body, and
 //! maintainer directives into one prompt. The parser decides which issue to run,
 //! while this module preserves the selected issue details and instructions in a
 //! form that can be sent to an agent over stdin.
@@ -136,9 +136,9 @@ pub fn load_directives(prompt_file: &Path) -> Result<String, String> {
 
 /// Renders the prompt sent to the coding agent for one selected issue.
 ///
-/// The prompt includes repository context, the PRD body, the selected child
-/// issue body, and the maintainer directives. It does not parse issue sections;
-/// candidate selection has already happened in [`crate::orchestrator`].
+/// The prompt includes repository context, the parent body, the selected child
+/// issue body, their authority rule, and the maintainer directives. It does not
+/// parse issue sections; selection has already happened in [`crate::orchestrator`].
 ///
 /// # Examples
 ///
@@ -151,32 +151,33 @@ pub fn load_directives(prompt_file: &Path) -> Result<String, String> {
 ///     body: "Acceptance criteria".into(),
 /// };
 ///
-/// let prompt = render_issue_prompt("owner/repo", "PRD body", &issue, "Run tests.");
+/// let prompt = render_issue_prompt("owner/repo", "Parent body", &issue, "Run tests.");
 /// assert!(prompt.contains("issue #7"));
-/// assert!(prompt.contains("PRD body"));
+/// assert!(prompt.contains("Parent body"));
 /// ```
 pub fn render_issue_prompt(
     repo: &str,
-    prd_body: &str,
+    parent_body: &str,
     issue: &GithubIssue,
     directives: &str,
 ) -> String {
     format!(
         "You are working on issue #{num}: \"{title}\" in {repo_name} repository.\n\n\
-         ## PRD Context\n\n\
+         ## Parent Context\n\n\
          ```markdown\n\
-         {prd_body}\n\
+         {parent_body}\n\
          ```\n\n\
          ## Task Description & Acceptance Criteria\n\n\
          ```markdown\n\
          {issue_body}\n\
          ```\n\n\
+         The parent governs initiative-wide constraints; this child issue governs its specific acceptance criteria. If they conflict, stop and ask for clarification.\n\n\
          ## Instructions\n\
          {directives}",
         num = issue.number,
         title = issue.title,
         repo_name = repo,
-        prd_body = prd_body,
+        parent_body = parent_body,
         issue_body = issue.body,
         directives = directives
     )
@@ -202,7 +203,7 @@ mod tests {
     use crate::github::GithubIssue;
 
     #[test]
-    fn render_issue_prompt_includes_prd_task_and_directives() {
+    fn render_issue_prompt_includes_parent_task_and_directives() {
         let issue = GithubIssue {
             number: 7,
             title: "Add endpoint".into(),
@@ -210,16 +211,18 @@ mod tests {
         };
         let prompt = render_issue_prompt(
             "foobar/repo",
-            "PRD acceptance criteria",
+            "Parent acceptance criteria",
             &issue,
             "1. Write tests\n2. Open PR",
         );
         assert!(prompt.contains("issue #7"));
         assert!(prompt.contains("Add endpoint"));
-        assert!(prompt.contains("PRD acceptance criteria"));
+        assert!(prompt.contains("Parent acceptance criteria"));
         assert!(prompt.contains("Acceptance: returns 200"));
         assert!(prompt.contains("1. Write tests"));
         assert!(prompt.contains("foobar/repo"));
+        assert!(prompt.contains("## Parent Context\n\n```markdown"));
+        assert!(prompt.contains("If they conflict, stop and ask for clarification."));
     }
 
     #[test]

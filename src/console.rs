@@ -112,10 +112,10 @@ fn dry_run_assignment_line(
     )
 }
 
-/// Prints the session header when a PRD loop starts.
-pub fn session_start(prd: u32) {
+/// Prints the session header when a parent issue loop starts.
+pub fn session_start(parent: u32) {
     let mut out = std::io::stdout().lock();
-    let _ = print_banner(&mut out, &format!("Nightshift  PRD #{prd}"));
+    let _ = print_banner(&mut out, &format!("Nightshift  Parent #{parent}"));
     let _ = writeln!(out, "{}", dim(&format!("started {}", format_timestamp())));
 }
 

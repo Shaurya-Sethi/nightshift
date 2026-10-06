@@ -1,4 +1,4 @@
-//! Coordinates the PRD issue loop.
+//! Coordinates the parent issue loop.
 //!
 //! Fetches ready GitHub issues, asks [`crate::parser`] which child to run, and
 //! invokes the configured agent with a rendered prompt. Also owns dry-run
@@ -20,10 +20,10 @@ use crate::prompt::{
 use crate::tui::{LiveHeader, NullWatch, RosterIssue, Watch, WatchEvent};
 use std::io::IsTerminal;
 
-/// Configuration for one nightshift PRD loop.
+/// Configuration for one nightshift parent issue loop.
 pub struct WorkflowConfig<'a> {
-    /// PRD issue number whose body becomes shared context for every child issue.
-    pub prd: u32,
+    /// Parent issue number whose body becomes shared context for every child issue.
+    pub parent: u32,
     /// Lowest child issue number to consider when selecting candidates.
     pub issue: u32,
     /// GitHub repository slug in `owner/name` form.
@@ -52,7 +52,7 @@ pub struct WorkflowConfig<'a> {
 /// Tests provide fake implementations here so the loop can be exercised without
 /// shelling out to `gh`, `git`, or a coding-agent CLI.
 pub struct Runtime<'a> {
-    /// GitHub issue source and PRD-body fetcher.
+    /// GitHub issue source and parent-body fetcher.
     pub github: &'a dyn GithubIssues,
     /// Git workspace hygiene implementation.
     pub git: &'a dyn GitOps,
@@ -66,8 +66,8 @@ fn run_with_preflight_io(
     runtime: Runtime<'_>,
     preflight_io: Option<&mut crate::preflight::Io<'_>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let prd_body = startup(&mut config, &runtime, preflight_io)?;
-    after_prepare(config, runtime, &prd_body, None)
+    let parent_body = startup(&mut config, &runtime, preflight_io)?;
+    after_prepare(config, runtime, &parent_body, None)
 }
 
 #[cfg(test)]
@@ -76,8 +76,8 @@ fn run_watched(
     runtime: Runtime<'_>,
     watch: &dyn Watch,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let prd_body = startup(&mut config, &runtime, None)?;
-    after_prepare(config, runtime, &prd_body, Some(watch))
+    let parent_body = startup(&mut config, &runtime, None)?;
+    after_prepare(config, runtime, &parent_body, Some(watch))
 }
 
 #[cfg(test)]
@@ -87,8 +87,8 @@ fn run_watched_with_preflight(
     preflight_io: &mut crate::preflight::Io<'_>,
     watch: &dyn Watch,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let prd_body = startup(&mut config, &runtime, Some(preflight_io))?;
-    after_prepare(config, runtime, &prd_body, Some(watch))
+    let parent_body = startup(&mut config, &runtime, Some(preflight_io))?;
+    after_prepare(config, runtime, &parent_body, Some(watch))
 }
 
 fn startup(
@@ -119,13 +119,18 @@ fn startup(
         io.ensure_terminal()?;
     }
 
-    let prd_body = runtime
+    let parent_body = runtime
         .github
-        .fetch_issue_body(config.repo, config.prd)
-        .map_err(|err| format!("nightshift: PRD issue {} not found: {}", config.prd, err))?;
+        .fetch_issue_body(config.repo, config.parent)
+        .map_err(|err| {
+            format!(
+                "nightshift: parent issue {} not found: {}",
+                config.parent, err
+            )
+        })?;
 
     if !config.tui {
-        console::session_start(config.prd);
+        console::session_start(config.parent);
     }
 
     if preflight_enabled {
@@ -133,7 +138,7 @@ fn startup(
             .github
             .fetch_issues(config.repo)
             .map_err(|e| format!("nightshift: failed to fetch issues: {}. Exiting.", e))?;
-        let plan = plan_order(&issues_json, config.prd, config.issue)?;
+        let plan = plan_order(&issues_json, config.parent, config.issue)?;
         let Some(io) = preflight_io.as_mut() else {
             return Err("nightshift: Invocation Profile Preflight requires terminal I/O".into());
         };
@@ -149,33 +154,34 @@ fn startup(
             .github
             .fetch_issues(config.repo)
             .map_err(|e| format!("nightshift: failed to fetch issues: {}. Exiting.", e))?;
-        let plan = plan_order(&issues_json, config.prd, config.issue)?;
+        let plan = plan_order(&issues_json, config.parent, config.issue)?;
         crate::recipe::assert_recipe_lock(&config.per_issue_profiles, &plan.planned)?;
     }
 
-    Ok(prd_body)
+    Ok(parent_body)
 }
 
 fn after_prepare(
     config: WorkflowConfig<'_>,
     runtime: Runtime<'_>,
-    prd_body: &str,
+    parent_body: &str,
     watch: Option<&dyn Watch>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if config.tui && watch.is_none() {
         let header = LiveHeader {
-            prd: config.prd,
+            parent: config.parent,
             repo: config.repo.to_string(),
             branch: config.base_branch.to_string(),
         };
-        let preview =
-            crate::tui::with_live_board(header, |watch| drive(config, runtime, prd_body, watch))?;
+        let preview = crate::tui::with_live_board(header, |watch| {
+            drive(config, runtime, parent_body, watch)
+        })?;
         print_deferred_dry_run(preview);
         return Ok(());
     }
     let null = NullWatch;
     let watch = watch.unwrap_or(&null);
-    let preview = drive(config, runtime, prd_body, watch)?;
+    let preview = drive(config, runtime, parent_body, watch)?;
     print_deferred_dry_run(preview);
     Ok(())
 }
@@ -183,18 +189,18 @@ fn after_prepare(
 fn drive(
     config: WorkflowConfig<'_>,
     runtime: Runtime<'_>,
-    prd_body: &str,
+    parent_body: &str,
     watch: &dyn Watch,
 ) -> Result<Option<DeferredDryRun>, Box<dyn std::error::Error>> {
     watch.emit(WatchEvent::Session {
-        prd: config.prd,
+        parent: config.parent,
         repo: config.repo.to_string(),
         branch: config.base_branch.to_string(),
     });
     if config.dry_run {
-        run_dry_run(config, runtime, prd_body, watch)
+        run_dry_run(config, runtime, parent_body, watch)
     } else {
-        run_loop(config, runtime, prd_body, watch)?;
+        run_loop(config, runtime, parent_body, watch)?;
         Ok(None)
     }
 }
@@ -202,7 +208,7 @@ fn drive(
 fn run_loop(
     config: WorkflowConfig<'_>,
     runtime: Runtime<'_>,
-    prd_body: &str,
+    parent_body: &str,
     watch: &dyn Watch,
 ) -> Result<(), Box<dyn std::error::Error>> {
     loop {
@@ -213,7 +219,7 @@ fn run_loop(
         if let Err(e) = runtime.git.ensure_hygiene(config.base_branch) {
             return fail(
                 watch,
-                config.prd,
+                config.parent,
                 format!("nightshift: git hygiene check failed: {}. Exiting.", e),
             );
         }
@@ -227,15 +233,15 @@ fn run_loop(
             Err(e) => {
                 return fail(
                     watch,
-                    config.prd,
+                    config.parent,
                     format!("nightshift: failed to fetch issues: {}. Exiting.", e),
                 );
             }
         };
 
-        let plan = match plan_order(&issues_json, config.prd, config.issue) {
+        let plan = match plan_order(&issues_json, config.parent, config.issue) {
             Ok(plan) => plan,
-            Err(e) => return fail(watch, config.prd, e.to_string()),
+            Err(e) => return fail(watch, config.parent, e.to_string()),
         };
         if let Err(message) = reject_unknown_recipe_issues(&config, &plan.planned) {
             let number = plan
@@ -243,7 +249,7 @@ fn run_loop(
                 .iter()
                 .find(|issue| !config.per_issue_profiles.contains_key(&issue.number))
                 .map(|issue| issue.number)
-                .unwrap_or(config.prd);
+                .unwrap_or(config.parent);
             return fail(watch, number, message);
         }
         emit_roster(watch, &plan, &config);
@@ -255,7 +261,7 @@ fn run_loop(
         let Some(selected_issue) = plan.planned.into_iter().next() else {
             if plan.blocked.is_empty() {
                 complete_without_candidates(
-                    config.prd,
+                    config.parent,
                     config.issue,
                     plan.has_open_children,
                     config.tui,
@@ -294,8 +300,12 @@ fn run_loop(
             .and_then(|row| row.prompt.as_ref());
         let directives =
             directives_for_invocation(config.directive_policy, per_issue, profile.agent);
-        let final_prompt =
-            render_issue_prompt(config.repo, prd_body, &selected_issue, directives.as_ref());
+        let final_prompt = render_issue_prompt(
+            config.repo,
+            parent_body,
+            &selected_issue,
+            directives.as_ref(),
+        );
 
         if let Some(path) = save_prompt_copy(selected_issue.number, &final_prompt)
             && let Some(run) = issue_run.as_ref()
@@ -386,10 +396,10 @@ fn roster_issue(issue: &GithubIssue, config: &WorkflowConfig<'_>) -> RosterIssue
     }
 }
 
-/// Runs the PRD child-issue loop until no eligible candidate remains.
+/// Runs the parent issue's child-issue loop until no eligible candidate remains.
 ///
 /// Each iteration enforces git hygiene, fetches open `ready-for-agent` issues,
-/// filters direct children of the requested PRD, then selects the
+/// filters direct children of the requested parent, then selects the
 /// lowest-numbered unblocked child. Dry runs print the full simulated solve order,
 /// the agent command preview, and the first planned issue's prompt, then exit.
 /// With `--tui`, that preview prints only after the Watch Board is dismissed.
@@ -405,7 +415,7 @@ fn roster_issue(issue: &GithubIssue, config: &WorkflowConfig<'_>) -> RosterIssue
 ///
 /// # Errors
 ///
-/// Returns an error when GitHub or git adapters fail, the PRD issue cannot be
+/// Returns an error when GitHub or git adapters fail, the parent issue cannot be
 /// found, the whole-run profile or pick flags are illegal, preflight aborts,
 /// a recipe's issue numbers do not match the planned set, a live issue is
 /// missing from a locked recipe, the agent command fails, or the selected
@@ -426,7 +436,7 @@ fn roster_issue(issue: &GithubIssue, config: &WorkflowConfig<'_>) -> RosterIssue
 /// # let git = GitCliAdapter::for_repo("owner/repo")?;
 /// # let agent_runner = ProcessAgentRunner;
 /// let config = WorkflowConfig {
-///     prd: 42,
+///     parent: 42,
 ///     issue: 0,
 ///     repo: "owner/repo",
 ///     base_branch: "main",
@@ -455,7 +465,7 @@ pub fn run(
     mut config: WorkflowConfig<'_>,
     runtime: Runtime<'_>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let prd_body = if !config.preflight_dimensions.requested() {
+    let parent_body = if !config.preflight_dimensions.requested() {
         startup(&mut config, &runtime, None)?
     } else {
         let stdin = std::io::stdin();
@@ -466,7 +476,7 @@ pub fn run(
         let mut io = crate::preflight::Io::new(terminal, &mut input, &mut output);
         startup(&mut config, &runtime, Some(&mut io))?
     };
-    after_prepare(config, runtime, &prd_body, None)
+    after_prepare(config, runtime, &parent_body, None)
 }
 
 type DryRunPreview<'a> = (
@@ -558,7 +568,7 @@ fn print_deferred_dry_run(preview: Option<DeferredDryRun>) {
 fn run_dry_run(
     config: WorkflowConfig<'_>,
     runtime: Runtime<'_>,
-    prd_body: &str,
+    parent_body: &str,
     watch: &dyn Watch,
 ) -> Result<Option<DeferredDryRun>, Box<dyn std::error::Error>> {
     if !config.tui {
@@ -569,7 +579,7 @@ fn run_dry_run(
     if let Err(e) = runtime.git.ensure_hygiene(config.base_branch) {
         return fail(
             watch,
-            config.prd,
+            config.parent,
             format!("nightshift: git hygiene check failed: {}. Exiting.", e),
         );
     }
@@ -579,15 +589,15 @@ fn run_dry_run(
         Err(e) => {
             return fail(
                 watch,
-                config.prd,
+                config.parent,
                 format!("nightshift: failed to fetch issues: {}. Exiting.", e),
             );
         }
     };
 
-    let plan = match plan_order(&issues_json, config.prd, config.issue) {
+    let plan = match plan_order(&issues_json, config.parent, config.issue) {
         Ok(plan) => plan,
-        Err(e) => return fail(watch, config.prd, e.to_string()),
+        Err(e) => return fail(watch, config.parent, e.to_string()),
     };
     if let Err(message) = reject_unknown_recipe_issues(&config, &plan.planned) {
         let number = plan
@@ -595,13 +605,18 @@ fn run_dry_run(
             .iter()
             .find(|issue| !config.per_issue_profiles.contains_key(&issue.number))
             .map(|issue| issue.number)
-            .unwrap_or(config.prd);
+            .unwrap_or(config.parent);
         return fail(watch, number, message);
     }
     emit_roster(watch, &plan, &config);
 
     if plan.planned.is_empty() && plan.blocked.is_empty() {
-        complete_without_candidates(config.prd, config.issue, plan.has_open_children, config.tui);
+        complete_without_candidates(
+            config.parent,
+            config.issue,
+            plan.has_open_children,
+            config.tui,
+        );
         watch.emit(WatchEvent::Done);
         return Ok(None);
     }
@@ -612,7 +627,7 @@ fn run_dry_run(
         &config.per_issue_profiles,
     ) {
         Ok(preview) => preview,
-        Err(e) => return fail(watch, config.prd, e),
+        Err(e) => return fail(watch, config.parent, e),
     };
     let blocked: Vec<(u32, String)> = plan
         .blocked
@@ -631,7 +646,8 @@ fn run_dry_run(
             .and_then(|row| row.prompt.as_ref());
         let directives =
             directives_for_invocation(config.directive_policy, per_issue, profile.agent);
-        let final_prompt = render_issue_prompt(config.repo, prd_body, first, directives.as_ref());
+        let final_prompt =
+            render_issue_prompt(config.repo, parent_body, first, directives.as_ref());
         #[cfg(test)]
         LAST_RENDERED_PROMPT.with(|slot| *slot.borrow_mut() = Some(final_prompt.clone()));
         Some(final_prompt)
@@ -667,7 +683,7 @@ fn reject_unknown_recipe_issues(
     crate::recipe::assert_no_unknown_recipe_issues(&config.per_issue_profiles, planned)
 }
 
-fn complete_without_candidates(prd: u32, min_issue: u32, has_open_children: bool, tui: bool) {
+fn complete_without_candidates(parent: u32, min_issue: u32, has_open_children: bool, tui: bool) {
     if tui {
         return;
     }
@@ -677,7 +693,7 @@ fn complete_without_candidates(prd: u32, min_issue: u32, has_open_children: bool
             min_issue
         ));
     } else {
-        console::loop_complete(&format!("All issues for PRD #{prd} resolved"));
+        console::loop_complete(&format!("All issues for parent #{parent} resolved"));
     }
 }
 
@@ -749,7 +765,7 @@ mod tests {
         directive_policy: DirectivePolicy<'a>,
     ) -> WorkflowConfig<'a> {
         WorkflowConfig {
-            prd: 42,
+            parent: 42,
             issue,
             repo: "foobar/repo",
             base_branch: "main",
@@ -899,7 +915,7 @@ mod tests {
         }
     }
 
-    fn prd_github() -> MockGithub {
+    fn parent_github() -> MockGithub {
         mock_github(
             graph(&[child(10, 42, &[]), child(11, 42, &[])]),
             HashMap::from([(42, "Product requirements".into())]),
@@ -925,7 +941,7 @@ mod tests {
 
     #[test]
     fn dry_run_does_not_invoke_agent() {
-        let github = prd_github();
+        let github = parent_github();
         let agent = idle_agent();
         let config = workflow(
             1,
@@ -1164,7 +1180,7 @@ mod tests {
     }
 
     #[test]
-    fn missing_prd_is_an_error() {
+    fn missing_parent_is_an_error() {
         let github = mock_github(graph(&[child(10, 42, &[])]), HashMap::new());
         let agent = idle_agent();
         let config = workflow(
@@ -1176,7 +1192,7 @@ mod tests {
             DirectivePolicy::Replace("test directives"),
         );
         let err = run(config, runtime(&github, &agent)).unwrap_err();
-        assert!(err.to_string().contains("PRD issue 42 not found"));
+        assert!(err.to_string().contains("parent issue 42 not found"));
     }
 
     #[test]
@@ -1874,7 +1890,7 @@ mod tests {
 
     #[test]
     fn stop_after_hygiene_does_not_dispatch() {
-        let github = prd_github();
+        let github = parent_github();
         let agent = idle_agent();
         let watch = crate::tui::WatchLog::new();
         let git = StoppingGit { watch: &watch };
@@ -1907,7 +1923,7 @@ mod tests {
     fn stop_after_slow_fetch_does_not_dispatch() {
         let watch = crate::tui::WatchLog::new();
         let github = StoppingFetchGithub {
-            inner: prd_github(),
+            inner: parent_github(),
             watch: &watch,
         };
         let agent = idle_agent();
@@ -2135,7 +2151,7 @@ mod tests {
 
     #[test]
     fn recipe_lock_runs_when_planned_set_matches() {
-        let github = prd_github();
+        let github = parent_github();
         let agent = recording_closer(&github.closed);
         run(
             recipe_config(recipe_profiles(&[10, 11])),
@@ -2147,7 +2163,7 @@ mod tests {
 
     #[test]
     fn recipe_lock_fails_before_agent_when_plan_has_extra_issue() {
-        let github = prd_github();
+        let github = parent_github();
         let agent = idle_agent();
         let error = run(
             recipe_config(recipe_profiles(&[10])),
@@ -2162,7 +2178,7 @@ mod tests {
 
     #[test]
     fn recipe_lock_fails_before_agent_when_recipe_has_extra_issue() {
-        let github = prd_github();
+        let github = parent_github();
         let agent = idle_agent();
         let error = run(
             recipe_config(recipe_profiles(&[10, 11, 99])),
@@ -2216,7 +2232,7 @@ mod tests {
     #[test]
     fn recipe_lock_aborts_when_a_new_issue_appears_mid_run() {
         let github = LateIssueGithub {
-            base: prd_github(),
+            base: parent_github(),
             extra: child(99, 42, &[]),
             inject_after: 2,
         };
@@ -2234,7 +2250,7 @@ mod tests {
     #[test]
     fn recipe_lock_dry_run_fails_when_plan_gains_an_issue() {
         let github = LateIssueGithub {
-            base: prd_github(),
+            base: parent_github(),
             extra: child(99, 42, &[]),
             inject_after: 1,
         };

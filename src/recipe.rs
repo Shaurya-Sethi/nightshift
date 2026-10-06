@@ -38,16 +38,16 @@ fn deserialize_base_branch<'de, D: Deserializer<'de>>(deserializer: D) -> Result
     Ok(Option::<String>::deserialize(deserializer)?.unwrap_or_else(default_base_branch))
 }
 
-/// Default `--write-recipe` destination for a PRD: `prd-<prd>-recipe.yaml` in cwd.
-pub fn default_write_path(prd: u32) -> PathBuf {
-    PathBuf::from(format!("prd-{prd}-recipe.yaml"))
+/// Default `--write-recipe` destination for a parent: `parent-<parent>-recipe.yaml` in cwd.
+pub fn default_write_path(parent: u32) -> PathBuf {
+    PathBuf::from(format!("parent-{parent}-recipe.yaml"))
 }
 
 /// Whole-run defaults plus per-issue rows from a recipe file.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Recipe {
-    prd: u32,
+    parent: u32,
     agent: Agent,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     repo: Option<String>,
@@ -95,8 +95,8 @@ pub struct RecipeIssue {
 
 /// Inputs for [`Recipe::from_planned`].
 pub struct GenerateSpec<'a> {
-    /// PRD issue number stamped into the recipe.
-    pub prd: u32,
+    /// Parent issue number stamped into the recipe.
+    pub parent: u32,
     /// Resolved `owner/name` slug.
     pub repo: &'a str,
     /// Whole-run default agent.
@@ -166,7 +166,7 @@ impl Recipe {
             })
             .collect();
         let recipe = Self {
-            prd: spec.prd,
+            parent: spec.parent,
             agent: spec.agent,
             repo: Some(spec.repo.to_string()),
             issue: spec.issue,
@@ -321,9 +321,9 @@ impl PreparedRecipe {
         Recipe::from_yaml(&text)?.prepare()
     }
 
-    /// PRD issue number from the recipe.
-    pub fn prd(&self) -> u32 {
-        self.recipe.prd
+    /// Parent issue number from the recipe.
+    pub fn parent(&self) -> u32 {
+        self.recipe.parent
     }
 
     /// Issue floor from the recipe (`0` when omitted).
@@ -515,7 +515,7 @@ mod tests {
     fn from_yaml_accepts_minimal_valid_recipe() {
         let recipe = Recipe::from_yaml(
             r#"
-prd: 12
+parent: 12
 agent: claude
 issues:
   - number: 42
@@ -524,7 +524,7 @@ issues:
 "#,
         )
         .expect("minimal recipe should parse");
-        assert_eq!(recipe.prd, 12);
+        assert_eq!(recipe.parent, 12);
         assert_eq!(recipe.agent, Agent::Claude);
         assert_eq!(recipe.issue, 0);
         assert_eq!(recipe.base_branch, "main");
@@ -534,10 +534,18 @@ issues:
     }
 
     #[test]
+    fn parent_is_the_only_parent_issue_recipe_key() {
+        let recipe = Recipe::from_yaml("parent: 12\nagent: claude\nissues: []\n")
+            .expect("parent key should parse");
+        assert!(recipe.to_yaml().unwrap().contains("parent: 12"));
+        assert!(Recipe::from_yaml("prd: 12\nagent: claude\nissues: []\n").is_err());
+    }
+
+    #[test]
     fn from_yaml_rejects_unknown_keys() {
         let error = Recipe::from_yaml(
             r#"
-prd: 12
+parent: 12
 agent: claude
 tui: true
 issues: []
@@ -549,16 +557,17 @@ issues: []
     }
 
     #[test]
-    fn from_yaml_requires_prd_agent_and_issues() {
+    fn from_yaml_requires_parent_agent_and_issues() {
         let error =
-            Recipe::from_yaml("agent: claude\nissues: []\n").expect_err("missing prd must fail");
-        assert!(error.contains("invalid recipe"), "{error}");
-
-        let error = Recipe::from_yaml("prd: 1\nissues: []\n").expect_err("missing agent must fail");
+            Recipe::from_yaml("agent: claude\nissues: []\n").expect_err("missing parent must fail");
         assert!(error.contains("invalid recipe"), "{error}");
 
         let error =
-            Recipe::from_yaml("prd: 1\nagent: claude\n").expect_err("missing issues must fail");
+            Recipe::from_yaml("parent: 1\nissues: []\n").expect_err("missing agent must fail");
+        assert!(error.contains("invalid recipe"), "{error}");
+
+        let error =
+            Recipe::from_yaml("parent: 1\nagent: claude\n").expect_err("missing issues must fail");
         assert!(error.contains("invalid recipe"), "{error}");
     }
 
@@ -566,7 +575,7 @@ issues: []
     fn from_yaml_rejects_open_code_kebab() {
         let error = Recipe::from_yaml(
             r#"
-prd: 1
+parent: 1
 agent: open-code
 issues: []
 "#,
@@ -579,7 +588,7 @@ issues: []
     fn from_yaml_accepts_opencode() {
         let recipe = Recipe::from_yaml(
             r#"
-prd: 1
+parent: 1
 agent: opencode
 issues: []
 "#,
@@ -592,7 +601,7 @@ issues: []
     fn from_yaml_treats_null_like_omit() {
         let recipe = Recipe::from_yaml(
             r#"
-prd: 12
+parent: 12
 agent: claude
 model: null
 reasoning_effort: null
@@ -616,7 +625,7 @@ issues:
     fn from_yaml_treats_null_issue_and_base_branch_like_omit() {
         let recipe = Recipe::from_yaml(
             r#"
-prd: 12
+parent: 12
 agent: claude
 issue: null
 base_branch: null
@@ -632,7 +641,7 @@ issues: []
     fn from_yaml_rejects_prompt_file_without_mode() {
         let path = missing_abs();
         let error = Recipe::from_yaml(&format!(
-            "prd: 12\nagent: claude\nprompt_file: '{path}'\nissues: []\n"
+            "parent: 12\nagent: claude\nprompt_file: '{path}'\nissues: []\n"
         ))
         .expect_err("prompt_file requires prompt_mode");
         assert!(
@@ -645,7 +654,7 @@ issues: []
     fn from_yaml_rejects_prompt_mode_without_file() {
         let error = Recipe::from_yaml(
             r#"
-prd: 12
+parent: 12
 agent: claude
 prompt_mode: append
 issues: []
@@ -662,7 +671,7 @@ issues: []
     fn from_yaml_rejects_relative_prompt_path() {
         let error = Recipe::from_yaml(
             r#"
-prd: 12
+parent: 12
 agent: claude
 prompt_file: ./directives.md
 prompt_mode: replace
@@ -677,7 +686,7 @@ issues: []
     fn from_yaml_rejects_tilde_prompt_path() {
         let error = Recipe::from_yaml(
             r#"
-prd: 12
+parent: 12
 agent: claude
 prompt_file: ~/directives.md
 prompt_mode: replace
@@ -692,7 +701,7 @@ issues: []
     fn from_yaml_rejects_duplicate_issue_numbers() {
         let error = Recipe::from_yaml(
             r#"
-prd: 12
+parent: 12
 agent: claude
 issues:
   - number: 42
@@ -707,7 +716,7 @@ issues:
     fn from_yaml_rejects_per_issue_prompt_mode_without_file() {
         let error = Recipe::from_yaml(
             r#"
-prd: 12
+parent: 12
 agent: claude
 issues:
   - number: 42
@@ -726,7 +735,7 @@ issues:
     fn prepare_fails_when_prompt_file_missing() {
         let path = missing_abs();
         let recipe = Recipe::from_yaml(&format!(
-            "prd: 12\nagent: claude\nprompt_file: '{path}'\nprompt_mode: replace\nissues: []\n"
+            "parent: 12\nagent: claude\nprompt_file: '{path}'\nprompt_mode: replace\nissues: []\n"
         ))
         .expect("absolute missing path is schema-valid");
         let error = recipe
@@ -739,7 +748,7 @@ issues:
     fn prepare_accepts_antigravity_model_and_effort() {
         let recipe = Recipe::from_yaml(
             r#"
-prd: 12
+parent: 12
 agent: antigravity
 model: gemini
 reasoning_effort: high
@@ -762,7 +771,7 @@ issues:
     fn prepare_rejects_cursor_effort_on_row() {
         let recipe = Recipe::from_yaml(
             r#"
-prd: 12
+parent: 12
 agent: claude
 issues:
   - number: 42
@@ -783,7 +792,7 @@ issues:
     fn prepare_accepts_opencode_passthrough_variant() {
         Recipe::from_yaml(
             r#"
-prd: 12
+parent: 12
 agent: opencode
 reasoning_effort: custom-variant
 issues:
@@ -799,7 +808,7 @@ issues:
     #[test]
     fn from_planned_fails_on_empty_set() {
         let error = Recipe::from_planned(GenerateSpec {
-            prd: 12,
+            parent: 12,
             repo: "owner/name",
             agent: Agent::Claude,
             issue: 0,
@@ -818,7 +827,7 @@ issues:
     fn from_planned_stamps_repo_and_omits_defaults() {
         let planned = [issue(42, "Add login"), issue(43, "Add logout")];
         let recipe = Recipe::from_planned(GenerateSpec {
-            prd: 12,
+            parent: 12,
             repo: "owner/name",
             agent: Agent::Claude,
             issue: 0,
@@ -831,7 +840,7 @@ issues:
         })
         .expect("non-empty plan");
         let yaml = recipe.to_yaml().expect("encode");
-        assert!(yaml.contains("prd: 12"), "{yaml}");
+        assert!(yaml.contains("parent: 12"), "{yaml}");
         assert!(yaml.contains("repo: owner/name"), "{yaml}");
         assert!(yaml.contains("agent: claude"), "{yaml}");
         assert!(yaml.contains("model: claude-opus-5"), "{yaml}");
@@ -850,7 +859,7 @@ issues:
     fn from_planned_omits_unset_model_and_effort() {
         let planned = [issue(1, "One")];
         let yaml = Recipe::from_planned(GenerateSpec {
-            prd: 9,
+            parent: 9,
             repo: "o/r",
             agent: Agent::Pi,
             issue: 4,
@@ -882,7 +891,7 @@ issues:
         std::fs::write(&prompt, "extra\n").expect("prompt file");
         let planned = [issue(1, "One")];
         let recipe = Recipe::from_planned(GenerateSpec {
-            prd: 12,
+            parent: 12,
             repo: "o/r",
             agent: Agent::Claude,
             issue: 0,
@@ -912,7 +921,7 @@ issues:
     fn write_to_fails_when_path_exists() {
         let planned = [issue(1, "One")];
         let recipe = Recipe::from_planned(GenerateSpec {
-            prd: 1,
+            parent: 1,
             repo: "o/r",
             agent: Agent::Pi,
             issue: 0,
@@ -939,7 +948,7 @@ issues:
     fn write_to_fails_when_path_is_directory() {
         let planned = [issue(1, "One")];
         let recipe = Recipe::from_planned(GenerateSpec {
-            prd: 1,
+            parent: 1,
             repo: "o/r",
             agent: Agent::Pi,
             issue: 0,
@@ -958,8 +967,11 @@ issues:
     }
 
     #[test]
-    fn default_write_path_uses_prd_number() {
-        assert_eq!(default_write_path(12), PathBuf::from("prd-12-recipe.yaml"));
+    fn default_write_path_uses_parent_number() {
+        assert_eq!(
+            default_write_path(12),
+            PathBuf::from("parent-12-recipe.yaml")
+        );
     }
 
     #[test]
@@ -988,14 +1000,14 @@ issues:
         let prompt = dir.join("directives.md");
         std::fs::write(&prompt, "  extra instructions  \n").expect("prompt file");
         let yaml = format!(
-            "prd: 12\nagent: claude\nprompt_file: '{}'\nprompt_mode: append\nissues:\n  - number: 42\n    agent: claude\n",
+            "parent: 12\nagent: claude\nprompt_file: '{}'\nprompt_mode: append\nissues:\n  - number: 42\n    agent: claude\n",
             prompt.display()
         );
         let prepared = Recipe::from_yaml(&yaml)
             .expect("schema")
             .prepare()
             .expect("readable prompt");
-        assert_eq!(prepared.prd(), 12);
+        assert_eq!(prepared.parent(), 12);
         match prepared.directive_policy() {
             DirectivePolicy::Append(text) => assert_eq!(text, "extra instructions"),
             other => panic!("expected append, got {other:?}"),

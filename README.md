@@ -8,10 +8,10 @@
 
 Go to sleep with a backlog and wake up with merged PRs.
 
-nightshift autonomously works through your GitHub issues while you are afk. Point it at a PRD (a Product Requirements Document, or spec, published as a GitHub issue), pick your [favourite coding agent](#supported-agents), and it handles the rest: branch, implement, PR, merge, repeat. It stops when every child issue is done. Inspired by the [Ralph Wiggum](https://ghuntley.com/loop/) loop pattern.
+nightshift autonomously works through your GitHub issues while you are afk. Point it at a parent issue describing the larger body of work, pick your [favourite coding agent](#supported-agents), and it handles the rest: branch, implement, PR, merge, repeat. The parent can cover a feature set, bug backlog, migration, or other coherent goal. It stops when every child issue is done. Inspired by the [Ralph Wiggum](https://ghuntley.com/loop/) loop pattern.
 
 > [!WARNING]
-> **nightshift selects work from native GitHub relationships, not issue-body text.** Child issues must be sub-issues of the PRD (`gh issue create --parent`), declare dependencies with `--blocked-by`, and carry the `ready-for-agent` label. Bodies are not parsed for membership or ordering. The bundled [skills](#skills) produce exactly this shape.
+> **nightshift selects work from native GitHub relationships, not issue-body text.** Child issues must be sub-issues of the parent (`gh issue create --parent`), declare dependencies with `--blocked-by`, and carry the `ready-for-agent` label. Bodies are not parsed for membership or ordering. The bundled [skills](#skills) produce exactly this shape.
 
 ## Prerequisites
 
@@ -37,16 +37,16 @@ cargo install --git https://github.com/Shaurya-Sethi/nightshift
 ## Usage
 
 ```bash
-nightshift --prd 12 --agent claude --model claude-opus-5
-nightshift --prd 12 --agent claude --tui
-nightshift --prd 12 --agent claude --write-recipe
-nightshift --recipe prd-12-recipe.yaml
+nightshift --parent 12 --agent claude --model claude-opus-5
+nightshift --parent 12 --agent claude --tui
+nightshift --parent 12 --agent claude --write-recipe
+nightshift --recipe parent-12-recipe.yaml
 ```
 
 
 | Flag                  | Required | Default                   | Description                                                                                          |
 | --------------------- | -------- | ------------------------- | ---------------------------------------------------------------------------------------------------- |
-| `--prd`               | yes*     | n/a                       | The PRD issue number to work through. Required unless `--recipe`.                                    |
+| `--parent`            | yes*     | n/a                       | The parent issue number to work through. Required unless `--recipe`.                                 |
 | `--agent`             | yes*     | n/a                       | Whole-run default agent: `claude`, `codex`, `antigravity`, `cursor`, `pi`, `opencode`, `copilot`. `--pick-agents` may override per issue. Required unless `--recipe`. |
 | `--model`             |          | agent's persisted default | Whole-run model for agents that support non-interactive model selection                              |
 | `--reasoning-effort`  |          | agent's persisted default | Whole-run agent-native effort. Cursor uses a model slug instead.                                     |
@@ -62,7 +62,7 @@ nightshift --recipe prd-12-recipe.yaml
 | `--dry-run`           |          | `false`                   | Show planned order and first prompt without starting an agent; requested preflight still runs        |
 | `--tui`               |          | `false`                   | Opt-in Watch Board. Requires stdin and stdout TTY; fails before GitHub or git work. While work is active, `q` / Ctrl-C stop after the current issue without killing the agent. Idle `q` / Ctrl-C / Enter dismisses. Exclusive with `--recipe` and `--write-recipe`. |
 | `--recipe`            |          | n/a                       | Start from a user-owned YAML run recipe. Exclusive with other run flags except `--dry-run`.          |
-| `--write-recipe`      |          | `prd-<prd>-recipe.yaml`   | Write a valid recipe for the planned set and exit. Requires `--prd` and `--agent`. PATH is a file (not a directory). Exclusive with `--recipe`, `--tui`, and `--pick-*`. Empty planned set writes nothing. Stdout is the written path. Fails if the path exists. |
+| `--write-recipe`      |          | `parent-<parent>-recipe.yaml` | Write a valid recipe for the planned set and exit. Requires `--parent` and `--agent`. PATH is a file (not a directory). Exclusive with `--recipe`, `--tui`, and `--pick-*`. Empty planned set writes nothing. Stdout is the written path. Fails if the path exists. |
 
 ### Invocation profiles
 
@@ -72,7 +72,7 @@ An **invocation profile** is the agent, model, and reasoning effort used for one
 
 To choose per issue interactively, add any of `--pick-agents`, `--pick-efforts`, `--pick-models`, or `--pick-prompts` (TTY only). `--pick-efforts` and `--pick-models` cannot be combined; the other pick flags stack with either. Enter keeps a default. `q` or Ctrl-C cancels the whole picker; a partial selection never starts a run. Pick flags cannot be combined with `--recipe` or `--write-recipe`.
 
-`--write-recipe` is an argv command (`--prd` + `--agent`). It stamps the planned set into YAML and exits. The generated file is already a valid recipe. Edit rows to vary agent, model, effort, or prompt, then `nightshift --recipe PATH`. Recipe issue numbers must match the live planned set or the run fails before the loop. Paths inside the YAML are absolute. `--recipe --dry-run` validates without spawning.
+`--write-recipe` is an argv command (`--parent` + `--agent`). It stamps the planned set into YAML and exits. The generated file is already a valid recipe. Edit rows to vary agent, model, effort, or prompt, then `nightshift --recipe PATH`. Recipe issue numbers must match the live planned set or the run fails before the loop. Paths inside the YAML are absolute. `--recipe --dry-run` validates without spawning.
 
 Picker order, inheritance, recipes, dry-run, and agent-specific knobs: [Invocation profiles](docs/invocation-profiles.md).
 
@@ -103,9 +103,9 @@ To add support for a new agent, see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## How It Works
 
-nightshift works through your PRD one issue at a time, stopping when there is nothing left to pick up.
+nightshift works through a parent issue's children one issue at a time, stopping when there is nothing left to pick up.
 
-Each iteration starts from a clean state: nightshift checks out and pulls your base branch, then fetches all open `ready-for-agent` issues from GitHub. It keeps issues whose native parent is your PRD, then picks the lowest-numbered one whose `blockedBy` issues are all closed. If nothing is unblocked, it stops.
+Each iteration starts from a clean state: nightshift checks out and pulls your base branch, then fetches all open `ready-for-agent` issues from GitHub. It keeps issues whose native parent is the requested issue, then picks the lowest-numbered one whose `blockedBy` issues are all closed. If nothing is unblocked, it stops.
 
 For the selected issue, nightshift constructs a unified prompt and pipes it to the coding agent via `stdin`. For details on prompt structures, default instructions, custom directives, and how nightshift manages isolated session context, see the [Context Management & Session Lifecycle Guide](docs/context-management.md).
 
@@ -117,15 +117,15 @@ After the agent exits, nightshift checks that the issue is actually closed on Gi
 
 ## Skills
 
-nightshift ships three agent skills under [`skills/`](skills/). They make it easy to publish a PRD, create child issues with the right parent and blocked-by links, and get a nightshift command that matches how you want to run.
+nightshift ships three agent skills under [`skills/`](skills/). They help you publish durable parent context, create bounded child issues with the right parent and blocked-by links, and get a nightshift command that matches how you want to run.
 
 | Skill | Description |
 | ----- | ----------- |
-| `to-nightshift-prd` | Turn the current conversation into a PRD and publish it as a GitHub issue. |
-| `to-nightshift-issues` | Break a PRD into tracer-bullet sub-issues with `--parent`, `--blocked-by`, and `ready-for-agent` (or `ready-for-human`). Creates the labels if missing. |
+| `to-nightshift-context` | Draft and review work-appropriate parent context, then publish it as a GitHub issue. |
+| `to-nightshift-issues` | Break parent context into bounded sub-issues with `--parent`, `--blocked-by`, and `ready-for-agent` (or `ready-for-human`). Creates the labels if missing. |
 | `to-nightshift-recipe` | Interview `--agent`, write a YAML recipe, and print `nightshift --recipe PATH`. |
 
-Flow: plan with an agent (or otherwise) → `to-nightshift-prd` → `to-nightshift-issues` → `to-nightshift-recipe` (optional) → `nightshift --recipe PATH --dry-run` → `nightshift --recipe PATH`. The first two skills need an authenticated `gh`.
+Flow: plan with an agent (or otherwise) → `to-nightshift-context` → `to-nightshift-issues` → `to-nightshift-recipe` (optional) → `nightshift --recipe PATH --dry-run` → `nightshift --recipe PATH`. The first two skills need an authenticated `gh`.
 
 ### Installing
 
@@ -139,7 +139,7 @@ No Node? Clone this repo and copy `skills/` into your agent's skills directory.
 
 ## Keeping Your System Awake
 
-For long-running PRD loops, see [docs/keep-alive.md](docs/keep-alive.md).
+For long-running issue loops, see [docs/keep-alive.md](docs/keep-alive.md).
 
 ## Contributing
 

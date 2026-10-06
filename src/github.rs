@@ -3,7 +3,7 @@
 //! This module defines the issue shape consumed by [`crate::orchestrator`] and
 //! the [`crate::github::GithubIssues`] adapter trait used in tests and production. The
 //! production adapter shells out to `gh issue list` for the open `ready-for-agent`
-//! graph, `gh issue view` for the PRD body and completion checks, and `gh repo view`
+//! graph, `gh issue view` for the parent body and completion checks, and `gh repo view`
 //! when the repository slug is not passed explicitly.
 
 use serde::Deserialize;
@@ -70,7 +70,7 @@ pub trait GithubIssues {
     /// The payload includes native `parent` and `blockedBy` fields used by
     /// [`crate::parser`].
     fn fetch_issues(&self, repo: &str) -> Result<String, Box<dyn std::error::Error>>;
-    /// Returns the markdown body of a single issue, used for PRD context.
+    /// Returns the markdown body of a single issue, used for parent context.
     ///
     /// # Errors
     ///

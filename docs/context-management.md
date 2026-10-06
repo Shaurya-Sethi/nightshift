@@ -6,13 +6,13 @@ When `nightshift` prepares to run a coding agent for a selected issue, it constr
 
 The constructed prompt always follows this exact format:
 
-```text
+````text
 You are working on issue #<ISSUE_NUMBER>: "<ISSUE_TITLE>" in <REPOSITORY> repository.
 
-## PRD Context
+## Parent Context
 
 ```markdown
-<FULL_BODY_OF_YOUR_PRD_ISSUE>
+<FULL_BODY_OF_THE_PARENT_ISSUE>
 ```
 
 ## Task Description & Acceptance Criteria
@@ -21,9 +21,11 @@ You are working on issue #<ISSUE_NUMBER>: "<ISSUE_TITLE>" in <REPOSITORY> reposi
 <FULL_BODY_OF_THE_CHILD_ISSUE>
 ```
 
+The parent governs initiative-wide constraints; this child issue governs its specific acceptance criteria. If they conflict, stop and ask for clarification.
+
 ## Instructions
 <DIRECTIVES>
-```
+````
 
 ---
 
@@ -34,13 +36,15 @@ You are working on issue #<ISSUE_NUMBER>: "<ISSUE_TITLE>" in <REPOSITORY> reposi
 `You are working on issue #<ISSUE_NUMBER>: "<ISSUE_TITLE>" in <REPOSITORY> repository.`
 This line sets the immediate target repository, the child issue number, and its title. It orientates the agent on the exact task it is expected to complete and close.
 
-### 2. PRD Context
+### 2. Parent Context
 
-The full body of the parent PRD issue is injected inside a fenced ````markdown` block. This keeps the PRD headers and formatting isolated so they do not leak or disrupt the surrounding prompt structure. The PRD acts as the overall source of truth for the codebase's feature set.
+The full body of the parent issue is injected inside a fenced ````markdown` block. This keeps its headers and formatting isolated from the prompt structure. The parent preserves the objective and initiative-wide decisions across fresh agent sessions.
 
 ### 3. Task Description & Acceptance Criteria
 
 The full body of the selected child issue is injected inside a fenced ````markdown` block. This provides the agent with the isolated task definition, acceptance criteria, and specific requirements for this single iteration.
+
+The parent governs initiative-wide constraints; the child governs its specific acceptance criteria. The agent stops for clarification if they conflict.
 
 ### 4. Instructions (`<DIRECTIVES>`)
 
@@ -103,7 +107,7 @@ A `--recipe` uses the same pairing as the picker: whole-run `prompt_file` + `pro
 
 ## Tips for Writing Custom Directives
 
-Since `nightshift` automatically injects the PRD context, child issue body, and orientation details beforehand, you do not need to duplicate them.
+Since `nightshift` automatically injects the parent context, child issue body, and orientation details beforehand, you do not need to duplicate them.
 
 - **Clarify the exact loop**: Explicitly instruct the agent on the exact Git workflow (e.g., `git checkout -b issue-{issue_number}`), the commands to run for tests and lints, how to create/merge PRs, and the maximum review/retry attempts allowed for sub-agents to avoid infinite loops.
 - **Optimize for Prompt Caching**: Keep static guidelines, coding conventions, and stack definitions at the top of your custom file, and place dynamic, highly variable, or high-entropy information at the very end to maximize cache hits and reduce API costs.

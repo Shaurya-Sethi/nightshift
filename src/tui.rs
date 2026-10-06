@@ -191,9 +191,9 @@ impl RosterIssue {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum WatchEvent {
     /// Header facts once known. Preview titles stay on [`BoardState`]; live
-    /// runs do not send an empty PRD title here.
+    /// runs do not send an empty parent title here.
     Session {
-        prd: u32,
+        parent: u32,
         repo: String,
         branch: String,
     },
@@ -349,10 +349,10 @@ pub enum BoardCommand {
 /// Frame snapshot for the Watch Board renderer.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BoardState {
-    /// PRD issue number.
-    pub prd: u32,
-    /// PRD title shown in the header when space allows.
-    pub prd_title: String,
+    /// Parent issue number.
+    pub parent: u32,
+    /// Parent title shown in the header when space allows.
+    pub parent_title: String,
     /// Repository slug `owner/name`.
     pub repo: String,
     /// Base or working branch name.
@@ -383,8 +383,8 @@ impl BoardState {
     /// This is fixture data for the offline example and tests. It is not a live run.
     pub fn offline_preview() -> Self {
         Self {
-            prd: 15,
-            prd_title: "Add opt-in Watch Board TUI".to_string(),
+            parent: 15,
+            parent_title: "Add opt-in Watch Board TUI".to_string(),
             repo: "offline/preview".to_string(),
             branch: "sample".to_string(),
             notice: Some("offline preview".to_string()),
@@ -446,10 +446,10 @@ impl BoardState {
     }
 
     /// Empty live board for a real `--tui` run.
-    pub fn live_run(prd: u32, repo: String, branch: String) -> Self {
+    pub fn live_run(parent: u32, repo: String, branch: String) -> Self {
         Self {
-            prd,
-            prd_title: String::new(),
+            parent,
+            parent_title: String::new(),
             repo,
             branch,
             notice: None,
@@ -606,8 +606,12 @@ impl BoardState {
     /// issue-specific [`Phase::Failed`].
     pub(crate) fn apply(&mut self, event: WatchEvent) {
         match event {
-            WatchEvent::Session { prd, repo, branch } => {
-                self.prd = prd;
+            WatchEvent::Session {
+                parent,
+                repo,
+                branch,
+            } => {
+                self.parent = parent;
                 self.repo = repo;
                 self.branch = branch;
             }
@@ -636,7 +640,7 @@ impl BoardState {
             WatchEvent::Ended { message } => {
                 if !self.can_dismiss() {
                     self.phase = Phase::Failed {
-                        issue: self.prd,
+                        issue: self.parent,
                         message,
                     };
                 }
@@ -772,7 +776,7 @@ pub fn restore_terminal() {
 
 /// Header facts used to seed the live Watch Board before the first event.
 pub(crate) struct LiveHeader {
-    pub prd: u32,
+    pub parent: u32,
     pub repo: String,
     pub branch: String,
 }
@@ -817,7 +821,7 @@ pub(crate) fn with_live_board<T>(
         let abort = Arc::new(AtomicBool::new(false));
         let ui_stop = stop.clone();
         let ui_abort = abort.clone();
-        let prd = header.prd;
+        let parent = header.parent;
         let handle = scope.spawn(move || match TerminalGuard::enter() {
             Ok((_guard, mut terminal)) => {
                 let _ = ready_tx.send(Ok(()));
@@ -841,7 +845,7 @@ pub(crate) fn with_live_board<T>(
             stop: stop.clone(),
         };
         let work_result = panic::catch_unwind(AssertUnwindSafe(|| work(&watch)));
-        if emit_after_work(&watch, prd, &work_result) {
+        if emit_after_work(&watch, parent, &work_result) {
             abort.store(true, Ordering::SeqCst);
         }
         drop(watch);
@@ -881,7 +885,7 @@ fn take_events(state: &mut BoardState, rx: &mpsc::Receiver<WatchEvent>) -> Chann
     }
     if disconnected && !state.can_dismiss() {
         state.apply(WatchEvent::Failed {
-            issue: state.prd,
+            issue: state.parent,
             message: "nightshift: orchestration ended unexpectedly".to_string(),
         });
     }
@@ -890,10 +894,10 @@ fn take_events(state: &mut BoardState, rx: &mpsc::Receiver<WatchEvent>) -> Chann
 
 /// Success emits [`WatchEvent::Done`]. Errors emit [`WatchEvent::Ended`] so
 /// the board can dismiss without replacing an issue-specific failure. A panic
-/// still emits [`WatchEvent::Failed`] on the PRD and asks the UI to abort.
+/// still emits [`WatchEvent::Failed`] on the parent issue and asks the UI to abort.
 fn emit_after_work<T>(
     watch: &dyn Watch,
-    prd: u32,
+    parent: u32,
     work: &thread::Result<Result<T, Box<dyn std::error::Error>>>,
 ) -> bool {
     match work {
@@ -909,7 +913,7 @@ fn emit_after_work<T>(
         }
         Err(_) => {
             watch.emit(WatchEvent::Failed {
-                issue: prd,
+                issue: parent,
                 message: "nightshift: orchestration panicked".to_string(),
             });
             true
@@ -940,7 +944,7 @@ fn ui_loop_inner(
     header: LiveHeader,
 ) -> io::Result<()> {
     let theme = Theme::from_env();
-    let mut state = BoardState::live_run(header.prd, header.repo, header.branch);
+    let mut state = BoardState::live_run(header.parent, header.repo, header.branch);
     let run_started = Instant::now();
     let mut drawn = false;
     loop {
@@ -1098,17 +1102,17 @@ fn render_header(
         LayoutMode::Tiny => {
             lines.push(Line::from(vec![
                 Span::styled("nightshift", theme.bold()),
-                Span::raw(format!("  PRD #{}", state.prd)),
+                Span::raw(format!("  Parent #{}", state.parent)),
             ]));
         }
         LayoutMode::Compact | LayoutMode::Wide => {
             lines.push(Line::from(vec![
                 Span::styled("nightshift", theme.bold()),
                 Span::raw("  "),
-                Span::styled(format!("PRD #{}", state.prd), theme.live()),
+                Span::styled(format!("Parent #{}", state.parent), theme.live()),
                 Span::styled(format!("  {}  {}", state.repo, state.branch), theme.muted()),
                 Span::raw("  "),
-                Span::raw(state.prd_title.as_str()),
+                Span::raw(state.parent_title.as_str()),
             ]));
             if area.height >= 2 {
                 lines.push(counts_line(state, theme));
@@ -1488,7 +1492,7 @@ mod tests {
         assert!(text.contains("1 blocked"));
         assert!(text.contains("1 failed"));
         assert!(text.contains("offline preview"));
-        assert!(text.contains("PRD #15"));
+        assert!(text.contains("Parent #15"));
         assert!(text.contains("offline/preview"));
     }
 
@@ -1703,11 +1707,11 @@ mod tests {
         }
     }
 
-    fn apply_work_error(state: &mut BoardState, prd: u32, message: &str) {
+    fn apply_work_error(state: &mut BoardState, parent: u32, message: &str) {
         let watch = WatchLog::new();
         let err: Box<dyn std::error::Error> = message.into();
         let work: std::thread::Result<Result<(), Box<dyn std::error::Error>>> = Ok(Err(err));
-        emit_after_work(&watch, prd, &work);
+        emit_after_work(&watch, parent, &work);
         for event in watch.events() {
             state.apply(event);
         }

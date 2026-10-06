@@ -1,8 +1,8 @@
 #![warn(missing_docs)]
 
-//! Nightshift runs a maintainers' loop over GitHub issues that belong to a PRD.
+//! Nightshift runs a maintainers' loop over GitHub issues that belong to a parent issue.
 //! It finds child issues from native GitHub `parent` links, gates work on
-//! `blockedBy` relationships, renders a prompt with PRD context, and invokes
+//! `blockedBy` relationships, renders a prompt with parent context, and invokes
 //! a coding agent to complete the selected issue. Selection is described in
 //! [`parser`].
 
@@ -18,7 +18,7 @@ pub mod git;
 pub mod github;
 /// Per-invocation model and reasoning-effort settings.
 pub mod invocation_profile;
-/// The PRD child-issue selection and agent execution loop.
+/// The parent issue's child selection and agent execution loop.
 pub mod orchestrator;
 /// Next-issue selection from native GitHub relationship JSON.
 pub mod parser;

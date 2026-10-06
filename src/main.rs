@@ -120,7 +120,7 @@ fn run_from_recipe(path: &Path, dry_run: bool) -> ExitCode {
         ));
     }
     let config = WorkflowConfig {
-        prd: prepared.prd(),
+        parent: prepared.parent(),
         issue: prepared.issue(),
         repo: &repo,
         base_branch: prepared.base_branch(),
@@ -144,12 +144,12 @@ fn run_from_recipe(path: &Path, dry_run: bool) -> ExitCode {
 }
 
 fn write_recipe(args: &Args, github: &GhCliAdapter, repo: &str, dest: &Path) {
-    let prd = args.prd.expect("clap requires --prd unless --recipe");
+    let parent = args.parent.expect("clap requires --parent unless --recipe");
     let agent = args.agent.expect("clap requires --agent unless --recipe");
     let issues_json = github
         .fetch_issues(repo)
         .unwrap_or_else(|e| die(format!("nightshift: failed to fetch issues: {e}. Exiting.")));
-    let plan = plan_order(&issues_json, prd, args.issue).unwrap_or_else(|e| die(e));
+    let plan = plan_order(&issues_json, parent, args.issue).unwrap_or_else(|e| die(e));
     let (prompt_file, prompt_mode) = match (
         args.prompt_file.as_deref(),
         args.append_prompt_file.as_deref(),
@@ -160,7 +160,7 @@ fn write_recipe(args: &Args, github: &GhCliAdapter, repo: &str, dest: &Path) {
         _ => unreachable!("clap rejects combining --prompt-file with --append-prompt-file"),
     };
     let recipe = Recipe::from_planned(GenerateSpec {
-        prd,
+        parent,
         repo,
         agent,
         issue: args.issue,

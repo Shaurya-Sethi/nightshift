@@ -6,7 +6,7 @@ use std::process::{Command, Stdio};
 fn tui_without_tty_fails_before_github_or_git() {
     let exe = env!("CARGO_BIN_EXE_nightshift");
     let output = Command::new(exe)
-        .args(["--tui", "--prd", "1", "--agent", "pi"])
+        .args(["--tui", "--parent", "1", "--agent", "pi"])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

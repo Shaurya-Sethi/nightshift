@@ -1,6 +1,6 @@
 ---
 name: to-nightshift-recipe
-description: Write a nightshift YAML run recipe for a PRD and give the user `nightshift --recipe PATH`. Use when the user wants per-issue agent/model/effort choices, a repeatable unattended run, or a start command for a PRD.
+description: Write a nightshift YAML run recipe for a parent issue and give the user `nightshift --recipe PATH`. Use when the user wants per-issue agent/model/effort choices, a repeatable unattended run, or a start command for a Nightshift parent.
 disable-model-invocation: true
 ---
 
@@ -12,7 +12,7 @@ Do not pass `--pick-*`. Do not emit a copy-ready argv crib sheet as the primary 
 
 North star: **best fit** per issue, with no **overkill** and no **underpowered**. Each filled row needs a short **why**.
 
-Ideal prior flow: plan with an agent (or otherwise) → `to-nightshift-prd` → `to-nightshift-issues` → this skill.
+Ideal prior flow: plan with an agent (or otherwise) → `to-nightshift-context` → `to-nightshift-issues` → this skill.
 
 ## Process
 
@@ -21,7 +21,7 @@ Ideal prior flow: plan with an agent (or otherwise) → `to-nightshift-prd` → 
 Ask, in order:
 
 1. **Whole-run default agent**: required `--agent` (see README agent matrix). Recipe rows that omit `agent` keep this value.
-2. **Granularity**: one whole-PRD profile vs per-issue variation in the recipe.
+2. **Granularity**: one profile for all children vs per-issue variation in the recipe.
 3. **Models under consideration**: user names the allowlist and/or whole-run pin. Do **not** scrape agent model catalogs. When agents will differ across rows, collect model notes **per candidate agent** (still user-supplied).
 4. Optional extras the user wants stamped on generate: `--model`, `--reasoning-effort`, `--prompt-file` / `--append-prompt-file`, `--issue`, `--repo` only when cwd detection is not enough.
 
@@ -33,20 +33,20 @@ When filling per-issue rows later, skip knobs that row's agent cannot use (Curso
 
 ### 2. Resolve execution scope
 
-Infer the repository from `gh` in the current working directory, exactly as `to-nightshift-prd` and `to-nightshift-issues` do. Ask only if `gh` cannot detect a repo or the user wants a different one.
+Infer the repository from `gh` in the current working directory, exactly as `to-nightshift-context` and `to-nightshift-issues` do. Ask only if `gh` cannot detect a repo or the user wants a different one.
 
-**PRD id** is runtime input: take from conversation or ask.
+**Parent issue number** is runtime input: take it from conversation or ask.
 
-**Write path:** default `./prd-<prd>-recipe.yaml`. If that file exists, stop and ask for another path (nightshift will not overwrite). Use a user-supplied path when they name one.
+**Write path:** default `./parent-<parent>-recipe.yaml`. If that file exists, stop and ask for another path (nightshift will not overwrite). Use a user-supplied path when they name one.
 
-**Done when:** `--prd`, `--agent`, write path, and `--repo` (only if needed) are known.
+**Done when:** `--parent`, `--agent`, write path, and `--repo` (only if needed) are known.
 
 ### 3. Stamp the planned set
 
 Run the real binary (prefer `nightshift` on PATH):
 
 ```bash
-nightshift --prd <prd_id> --agent <agent> --write-recipe <path>
+nightshift --parent <parent_id> --agent <agent> --write-recipe <path>
 ```
 
 Add `--model`, `--reasoning-effort`, `--prompt-file` or `--append-prompt-file`, `--issue`, and `--repo` only when the interview accepted them. Never pass `--pick-*` or `--tui`.
@@ -59,7 +59,7 @@ The file is already a valid recipe. `--write-recipe` prints the path.
 
 ### 4. Model character research (per-issue variation only)
 
-If the user chose whole-PRD profile, skip to step 6.
+If the user chose one profile for all children, skip to step 6.
 
 For **each distinct** model in the allowlist/pin (and per candidate agent when agents will vary), research cost and performance character (web search). Do not recommend from name vibes alone.
 
@@ -69,7 +69,7 @@ If research fails for a model: **block** until search works **or** the user supp
 
 ### 5. Fill per-issue rows
 
-Using PRD, issue bodies, and codebase as needed, assign **best fit** profiles in planned order and edit the YAML in place.
+Using the parent context, child issue bodies, and codebase as needed, assign **best fit** profiles in planned order and edit the YAML in place.
 
 - Keep whole-run `agent` / `model` / `reasoning_effort` at the top of the file.
 - Change a row's `agent`, `model`, or `reasoning_effort` only when it should differ. Omit a field to inherit (same-agent rule).
@@ -85,7 +85,7 @@ Using PRD, issue bodies, and codebase as needed, assign **best fit** profiles in
 
 Print in this order:
 
-1. **Mode summary**: whole-run `agent`, whole-PRD vs per-issue, pin/allowlist, extras. Mention Same-Agent Defaults Inheritance when agents may differ.
+1. **Mode summary**: whole-run `agent`, one profile for all children vs per-issue, pin/allowlist, extras. Mention Same-Agent Defaults Inheritance when agents may differ.
 2. **Recommendations**: markdown table in planned order, with a **why** column. Use `n/a` when a cell does not apply.
 3. **Copy-ready command** (no `--dry-run`):
 

@@ -9,22 +9,22 @@ Selections are never written to issues or the repository. `--write-recipe` write
 Pass `--agent` with optional `--model` and `--reasoning-effort`. Every issue uses the fields you supplied. Omitted fields stay at the agent's own persisted default.
 
 ```bash
-nightshift --prd 12 --agent claude --model claude-opus-5
-nightshift --prd 12 --agent claude --pick-agents --pick-models
+nightshift --parent 12 --agent claude --model claude-opus-5
+nightshift --parent 12 --agent claude --pick-agents --pick-models
 ```
 
 ## Recipes
 
-`--write-recipe` requires `--prd` and `--agent`. It stamps the planned set into YAML and exits without starting a run. Default path: `prd-<prd>-recipe.yaml` in the current directory. PATH, when given, must be a file, not a directory. Exclusive with `--recipe`, `--tui`, and `--pick-*`. Empty planned set writes nothing. Stdout is the written path. The file is a valid recipe: whole-run `--agent` plus one row per planned issue. Edit rows to vary agent, model, effort, or prompt. `--write-recipe` fails if the path exists.
+`--write-recipe` requires `--parent` and `--agent`. It stamps the planned set into YAML and exits without starting a run. Default path: `parent-<parent>-recipe.yaml` in the current directory. PATH, when given, must be a file, not a directory. Exclusive with `--recipe`, `--tui`, and `--pick-*`. Empty planned set writes nothing. Stdout is the written path. The file is a valid recipe: whole-run `--agent` plus one row per planned issue. Edit rows to vary agent, model, effort, or prompt. `--write-recipe` fails if the path exists.
 
 ```bash
-nightshift --prd 12 --agent claude --write-recipe
-nightshift --recipe prd-12-recipe.yaml
-nightshift --recipe prd-12-recipe.yaml --dry-run
+nightshift --parent 12 --agent claude --write-recipe
+nightshift --recipe parent-12-recipe.yaml
+nightshift --recipe parent-12-recipe.yaml --dry-run
 ```
 
 ```yaml
-prd: 12
+parent: 12
 repo: owner/name
 agent: claude
 model: claude-opus-5

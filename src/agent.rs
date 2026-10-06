@@ -94,7 +94,9 @@ impl Agent {
         match self {
             Self::Pi => Some(&["off", "minimal", "low", "medium", "high", "xhigh", "max"]),
             Self::Copilot => Some(&["none", "minimal", "low", "medium", "high", "xhigh", "max"]),
-            Self::Claude | Self::Antigravity => Some(&["low", "medium", "high", "max"]),
+            Self::Claude => Some(&["low", "medium", "high", "xhigh", "max"]),
+            // `agy --help` also advertises max, but headless `-p` accepts only these levels.
+            Self::Antigravity => Some(&["low", "medium", "high"]),
             Self::Codex => Some(&["minimal", "low", "medium", "high", "xhigh"]),
             // picker legend; local `opencode run --help` also examples max/minimal.
             // whole-run --variant values still pass through unchanged.
@@ -458,23 +460,6 @@ mod tests {
     }
 
     #[test]
-    fn claude_only_exposes_documented_reasoning_effort_values() {
-        assert_eq!(
-            Agent::Claude.supported_reasoning_efforts(),
-            Some(&["low", "medium", "high", "max"][..])
-        );
-        assert!(
-            Agent::Claude
-                .get_command_with_profile(InvocationProfile {
-                    agent: Agent::Claude,
-                    model: None,
-                    reasoning_effort: Some("xhigh"),
-                })
-                .is_err()
-        );
-    }
-
-    #[test]
     fn opencode_passes_dynamic_variants_through_unchanged() {
         let (_, args) = Agent::OpenCode
             .get_command_with_profile(InvocationProfile {
@@ -636,7 +621,7 @@ mod tests {
     fn antigravity_passes_model_and_native_effort_to_headless_cli() {
         assert_eq!(
             Agent::Antigravity.supported_reasoning_efforts(),
-            Some(&["low", "medium", "high", "max"][..])
+            Some(&["low", "medium", "high"][..])
         );
         let (program, args) = Agent::Antigravity
             .get_command_with_profile(InvocationProfile {
@@ -662,10 +647,10 @@ mod tests {
             .get_command_with_profile(InvocationProfile {
                 agent: Agent::Antigravity,
                 model: None,
-                reasoning_effort: Some("xhigh"),
+                reasoning_effort: Some("max"),
             })
-            .expect_err("agy rejects efforts outside its native enum");
-        assert!(error.contains("supported values: low, medium, high, max"));
+            .expect_err("agy headless mode rejects max effort");
+        assert!(error.contains("supported values: low, medium, high"));
     }
 
     #[test]

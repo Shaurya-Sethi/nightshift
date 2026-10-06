@@ -1206,8 +1206,8 @@ mod tests {
             (
                 Agent::Antigravity,
                 None,
-                Some("xhigh"),
-                "does not support --reasoning-effort xhigh",
+                Some("max"),
+                "does not support --reasoning-effort max",
             ),
             (
                 Agent::Cursor,
@@ -1218,8 +1218,8 @@ mod tests {
             (
                 Agent::Claude,
                 None,
-                Some("xhigh"),
-                "does not support --reasoning-effort xhigh",
+                Some("ultracode"),
+                "does not support --reasoning-effort ultracode",
             ),
         ];
         for (agent, model, effort, needle) in cases {

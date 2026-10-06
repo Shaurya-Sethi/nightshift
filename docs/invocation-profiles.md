@@ -79,7 +79,7 @@ Whole-run `--model` and `--reasoning-effort` apply only while the row still uses
 
 Without `--pick-agents`, `--pick-efforts` is valid for `pi`, `copilot`, `claude`, `codex`, `opencode`, and `antigravity`. All agents support `--pick-models`; Cursor's picker is model-only because effort is encoded in its model slug.
 
-With `--pick-agents`, Cursor rows skip separate effort. Antigravity rows collect both model and effort when enabled (`low`, `medium`, `high`, `max`).
+With `--pick-agents`, Cursor rows skip separate effort. Antigravity rows collect both model and effort when enabled (`low`, `medium`, `high` in headless print mode; `max` is not accepted there).
 
 ## Prompts
 

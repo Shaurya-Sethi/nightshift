@@ -74,7 +74,7 @@ Using PRD, issue bodies, and codebase as needed, assign **best fit** profiles in
 - Keep whole-run `agent` / `model` / `reasoning_effort` at the top of the file.
 - Change a row's `agent`, `model`, or `reasoning_effort` only when it should differ. Omit a field to inherit (same-agent rule).
 - Cursor: effort lives in the model slug; do not set `reasoning_effort` on that row.
-- Antigravity: `model` comes from the user allowlist; `reasoning_effort` accepts `low`, `medium`, `high`, or `max`.
+- Antigravity: `model` comes from the user allowlist; `reasoning_effort` accepts `low`, `medium`, or `high` in headless mode (not `max`).
 - Other agents: effort from the README matrix; models from the user allowlist.
 - `prompt_file` requires `prompt_mode` (`append` or `replace`). Paths must be absolute.
 - Do not add `pick_*`, `tui`, `dry_run`, or `append_prompt_file` keys. Do not change `number`. `title` is documentary.

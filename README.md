@@ -87,7 +87,7 @@ nightshift hands your agent a single prompt per issue. These agents work out of 
 | --------------- | ----------- | -------------------- | --------------------------- | ------- |
 | `claude`        | `claude`    | yes                  | `--effort`: `low`, `medium`, `high`, `max` | [Anthropic Claude Code](https://docs.anthropic.com/en/docs/claude-code) |
 | `codex`         | `codex`     | yes                  | `-c model_reasoning_effort=…`: `minimal`, `low`, `medium`, `high`, `xhigh` | [OpenAI Codex CLI](https://github.com/openai/codex) |
-| `antigravity`   | `agy`       | yes (`--model`)      | `--effort`: `low`, `medium`, `high` (headless) | [Google Antigravity CLI](https://antigravity.google/blog/introducing-google-antigravity-cli) |
+| `antigravity`   | `agy`       | yes                  | `--effort`: `low`, `medium`, `high` (headless) | [Google Antigravity CLI](https://antigravity.google/blog/introducing-google-antigravity-cli) |
 | `cursor`        | `agent`     | yes                  | **Model-Encoded Effort**; no separate effort flag | [Cursor](https://cursor.com/cli) |
 | `pi`            | `pi`        | yes                  | `--thinking`: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max` | [Pi](https://pi.dev/) |
 | `opencode`      | `opencode`  | yes                  | `--variant`; preflight legend: `low`, `medium`, `high`, `xhigh`, `minimal`, `max`; whole-run variants pass through unchanged | [OpenCode](https://opencode.ai/docs/cli) (`--model` uses `provider/model`) |
